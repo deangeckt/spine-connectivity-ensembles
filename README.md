@@ -1,10 +1,16 @@
-# spines_connectivity_logic
+# Connectivity Logic of Dendritic Spines in Cortex: Increased Inputs and Ensemble Formation
 
-This repository contains the code and notes for the spine connectivity logic project. It is intended to support analysis, experimentation, and implementation work related to spine connectivity modeling.
+[![DOI](https://img.shields.io/badge/DOI-10.64898%2F2026.06.07.730704-blue.svg)](https://doi.org/10.64898/2026.06.07.730704)
+
+This repository provides the official codebase, data analysis pipelines, and supplementary notes for the preprint **[Connectivity Logic of Dendritic Spines in Cortex: Increased Inputs and Ensemble Formation](https://doi.org/10.64898/2026.06.07.730704)** by Dean Geckt, Netanel Ofer, Michael W. ReimaNnn, Rafael Yuste, and Idan Segev.
+
+
+![alt text](1.png)
+
 
 ## Citation
 
-If you use this project, please cite the paper:
+If you use this code or data in your research, please cite our preprint:
 
 ```bibtex
 @misc{geckt2026connectivitylogic,
