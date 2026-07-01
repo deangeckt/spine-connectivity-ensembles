@@ -22,3 +22,18 @@ If you use this code or data in your research, please cite our preprint:
 	note = {Preprint}
 }
 ```
+
+
+## Conventions:
+
+### Data version
+`MATERIALIZATION_VERSION = 1718` is defined in `connectome_types.py` and must be passed to any CAVEclient call: `client.materialize.version = MATERIALIZATION_VERSION`.
+
+
+### Null models (figure 4 only)
+Generated in-memory with `generate_shuffles(bin_mat, mapping, neuron_clf_type, shuffle_mode, amount)`. No disk cache. `shuffle_mode` is `'cfg'` (configuration model).
+
+
+### Connectivity matrix convention
+`filtered_syn_mat[i, j]` = synapses from neuron `i` (pre) → neuron `j` (post).
+`filtered_mapping` = `{matrix_index: root_id}`. Always rebuild after any neuron filtering.

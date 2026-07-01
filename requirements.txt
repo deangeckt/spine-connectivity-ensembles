@@ -1,0 +1,13 @@
+numpy>=2.0
+pandas>=2.0
+matplotlib>=3.8
+scipy>=1.12
+seaborn>=0.13
+tqdm>=4.0
+
+# MICrONS / connectome-specific
+meshparty>=2.0
+skeleton-plot>=0.1
+standard-transform>=1.4
+caveclient>=8.0
+imageryclient>=1.0
