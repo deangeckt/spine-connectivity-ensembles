@@ -1,6 +1,7 @@
 # Connectivity Logic of Dendritic Spines in Cortex: Increased Inputs and Ensemble Formation
 
-[![DOI](https://img.shields.io/badge/DOI-10.64898%2F2026.06.07.730704-blue.svg)](https://doi.org/10.64898/2026.06.07.730704) [![DOI](https://zenodo.org/badge/1284929803.svg)](https://doi.org/10.5281/zenodo.21104860)
+[![DOI](https://img.shields.io/badge/DOI-10.64898%2F2026.06.07.730704-blue.svg)](https://doi.org/10.64898/2026.06.07.730704) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21104860.svg)](https://doi.org/10.5281/zenodo.21104860)
+
 
 This repository provides the official codebase, data analysis pipelines, and supplementary notes for the preprint **[Connectivity Logic of Dendritic Spines in Cortex: Increased Inputs and Ensemble Formation](https://doi.org/10.64898/2026.06.07.730704)** by Dean Geckt, Netanel Ofer, Michael W. ReimaNnn, Rafael Yuste, and Idan Segev.
 
