@@ -351,21 +351,3 @@ def plot_branch_from_image(ax, branch_idx, branches_images, original_xlim, origi
     ax.set_xticklabels("")
     ax.set_xticks([])
     ax.set_yticks([])
-
-
-def debug_letter_placement(fig):
-    grid_ax = fig.add_axes([0, 0, 1, 1], zorder=100)
-    grid_ax.patch.set_alpha(0.0)
-    for spine in grid_ax.spines.values():
-        spine.set_visible(False)
-    grid_ax.tick_params(which='both', length=0, labelsize=0)
-    ticks_major = [x / 20.0 for x in range(21)]
-    ticks_minor = [x / 100.0 for x in range(101)]
-    grid_ax.set_xticks(ticks_major)
-    grid_ax.set_yticks(ticks_major)
-    grid_ax.set_xticks(ticks_minor, minor=True)
-    grid_ax.set_yticks(ticks_minor, minor=True)
-    grid_ax.grid(which='major', color='blue', alpha=0.3, linewidth=0.8)
-    grid_ax.grid(which='minor', color='gray', alpha=0.15, linewidth=0.4)
-    grid_ax.set_xlim(0, 1)
-    grid_ax.set_ylim(0, 1)

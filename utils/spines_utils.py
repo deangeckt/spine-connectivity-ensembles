@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 
-def filter_valid_neuron_w_spines(df):
+def filter_valid_neuron_w_spines(df, connectivity_dir=None):
     from utils import load_bin_mat
     print("Filtering neurons with valid spine data...")
     df = df[df.dendrite_length > 0]
@@ -15,7 +15,8 @@ def filter_valid_neuron_w_spines(df):
     print(f"Remaining neurons after filtering: {len(df)}")
     print('fixing networks')
 
-    _, _, syn_mat, mapping, _, _ = load_bin_mat()
+    kwargs = {'connectivity_dir': connectivity_dir} if connectivity_dir is not None else {}
+    _, _, syn_mat, mapping, _, _ = load_bin_mat(**kwargs)
 
     ex_df = df[df.clf_type == 'E']
     inh_df = df[df.clf_type == 'I']
@@ -76,13 +77,6 @@ def configuration_model(M, seed = None):
     csr matrix
         Configuration model control of adj
 
-    See Also
-    --------
-    [run_SBM](randomization.md#src.connalysis.randomization.randomization.run_SBM) :
-    Function which runs the stochastic block model
-
-    [run_DD2](randomization.md#src.connalysis.randomization.randomization.run_DD2) :
-    Function which runs the 2nd distance dependent model
     """
     adj=M.copy().tocoo()
     generator = np.random.default_rng(seed)

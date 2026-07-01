@@ -56,7 +56,7 @@ class Neuron:
         self.post_synapses = post_synapses  # outgoing
         self.pre_synapses = pre_synapses  # incoming
 
-        # ds refer to whole dataset, not just within the EM volume
+        # ds refer to the whole dataset, not just within the column
         self.ds_num_of_incoming_synapses = -1
         self.ds_num_of_outgoing_synapses = -1
 

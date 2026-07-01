@@ -306,3 +306,44 @@ def mean_input_outdegree(real_blocks, col_idx_map, filtered_mapping, df,
             inh_df['mean_input_outdegree_full'] = full_series
 
         return ex_df.reset_index(), inh_df.reset_index()
+
+
+def get_crossing_distances_by_neuron(outgoing_syn, max_distance=1200, num_pop_bins=100,
+                                      dist_col='dist_to_pre_syn_soma'):
+    """
+    For each neuron (pre_id), compute the axonal distance at which spine fraction crosses 0.5.
+    Returns 0.0 if always above 0.5, np.inf if never crosses.
+    Used for fig_s7.ipynb.
+    """
+    import numpy as np
+    pop_bins = np.linspace(0, max_distance, num_pop_bins)
+    pop_bin_centers = (pop_bins[:-1] + pop_bins[1:]) / 2
+    crossing_distances = {}
+
+    for neuron_id in outgoing_syn['pre_id'].unique():
+        df_neuron = outgoing_syn[outgoing_syn['pre_id'] == neuron_id]
+        counts_all, _ = np.histogram(df_neuron[dist_col], bins=pop_bins)
+        spines_only = df_neuron[df_neuron['tag'] == 'spine']
+        counts_spines, _ = np.histogram(spines_only[dist_col], bins=pop_bins)
+        valid_bins = counts_all > 0
+
+        if not np.any(valid_bins):
+            crossing_distances[neuron_id] = np.inf
+            continue
+
+        y_vals = counts_spines[valid_bins] / counts_all[valid_bins]
+        x_vals = pop_bin_centers[valid_bins]
+        above_half_idx = np.where(y_vals > 0.5)[0]
+
+        if len(above_half_idx) == 0:
+            crossing_distances[neuron_id] = np.inf
+        elif above_half_idx[0] == 0:
+            crossing_distances[neuron_id] = 0.0
+        else:
+            idx1 = above_half_idx[0]
+            idx0 = idx1 - 1
+            x0, y0 = x_vals[idx0], y_vals[idx0]
+            x1, y1 = x_vals[idx1], y_vals[idx1]
+            crossing_distances[neuron_id] = x0 + (x1 - x0) * ((0.5 - y0) / (y1 - y0 + 1e-9))
+
+    return crossing_distances
