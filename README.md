@@ -7,6 +7,8 @@ This repository provides the official codebase, data analysis pipelines, and sup
 
 ![alt text](1.png)
 
+## Getting started
+To reproduce the analyses, first run the `fetch_zenodo_data.py` script to automatically download and extract the required dataset. Once the data directory is populated, you can execute any of the provided Jupyter notebooks to generate the corresponding manuscript figures.
 
 ## Citation
 
@@ -24,7 +26,7 @@ If you use this code or data in your research, please cite our preprint:
 ```
 
 
-## Conventions:
+## Conventions
 
 ### Data version
 `MATERIALIZATION_VERSION = 1718` is defined in `connectome_types.py` and must be passed to any CAVEclient call: `client.materialize.version = MATERIALIZATION_VERSION`.
