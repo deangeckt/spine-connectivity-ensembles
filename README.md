@@ -1,6 +1,6 @@
 # Connectivity Logic of Dendritic Spines in Cortex: Increased Inputs and Ensemble Formation
 
-[![DOI](https://img.shields.io/badge/DOI-10.64898%2F2026.06.07.730704-blue.svg)](https://doi.org/10.64898/2026.06.07.730704)
+[![DOI](https://img.shields.io/badge/DOI-10.64898%2F2026.06.07.730704-blue.svg)](https://doi.org/10.64898/2026.06.07.730704) [![DOI](https://zenodo.org/badge/1284929803.svg)](https://doi.org/10.5281/zenodo.21104860)
 
 This repository provides the official codebase, data analysis pipelines, and supplementary notes for the preprint **[Connectivity Logic of Dendritic Spines in Cortex: Increased Inputs and Ensemble Formation](https://doi.org/10.64898/2026.06.07.730704)** by Dean Geckt, Netanel Ofer, Michael W. ReimaNnn, Rafael Yuste, and Idan Segev.
 
@@ -9,6 +9,8 @@ This repository provides the official codebase, data analysis pipelines, and sup
 
 ## Getting started
 To reproduce the analyses, first run the `fetch_zenodo_data.py` script to automatically download and extract the required dataset. Once the data directory is populated, you can execute any of the provided Jupyter notebooks to generate the corresponding manuscript figures.
+
+You may need to install a python env via the `requirements.txt`
 
 ## Citation
 
