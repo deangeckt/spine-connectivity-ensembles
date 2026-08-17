@@ -1,9 +1,9 @@
-# Connectivity Logic of Dendritic Spines in Cortex: Increased Inputs and Ensemble Formation
+# Dendritic spines implement specific connectivity and support neuronal ensembles in cortical circuits
 
 [![DOI](https://img.shields.io/badge/DOI-10.64898%2F2026.06.07.730704-blue.svg)](https://doi.org/10.64898/2026.06.07.730704) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21104860.svg)](https://doi.org/10.5281/zenodo.21104860)
 
 
-This repository provides the official codebase, data analysis pipelines, and supplementary notes for the preprint **[Connectivity Logic of Dendritic Spines in Cortex: Increased Inputs and Ensemble Formation](https://doi.org/10.64898/2026.06.07.730704)** by Dean Geckt, Netanel Ofer, Michael W. ReimaNnn, Rafael Yuste, and Idan Segev.
+This repository provides the official codebase, data analysis pipelines, and supplementary notes for the preprint **[Dendritic spines implement specific connectivity and support neuronal ensembles in cortical circuits](https://doi.org/10.64898/2026.06.07.730704)** by Dean Geckt, Netanel Ofer, Michael W. ReimaNnn, Rafael Yuste, and Idan Segev.
 
 
 ![alt text](1.png)
@@ -18,8 +18,8 @@ You may need to install a python env via the `requirements.txt`
 If you use this code or data in your research, please cite our preprint:
 
 ```bibtex
-@misc{geckt2026connectivitylogic,
-	title = {Connectivity Logic of Dendritic Spines in Cortex: Increased Inputs and Ensemble Formation},
+@misc{geckt2026dendriticspines,
+	title = {Dendritic spines implement specific connectivity and support neuronal ensembles in cortical circuits},
 	author = {Geckt, Dean and Ofer, Netanel and Reimann, Michael W. and Yuste, Rafael and Segev, Idan},
 	year = {2026},
 	doi = {10.64898/2026.06.07.730704},
