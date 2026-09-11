@@ -16,7 +16,7 @@ Netanel Ofer, Michael W. Reimann, Rafael Yuste, and Idan Segev.
 
 ```
 download_data_zenodo.py   route 1 to the structural data — download it, minutes
-download_data_cave.py     route 2 to the structural data — rebuild it from MICrONS, ~a day
+download_data_cave.py     route 2 to the structural data — rebuild it from MICrONS
 figures/                  one notebook per figure; each writes its own PDF/PNG beside itself
 figures/supplementary/    the same, for figures S1-S15
 images/                   hand-made dendrite renders and EM cut-outs for figures 1, 2, S1
@@ -30,6 +30,10 @@ data/                     created by the two download scripts; not in git
 |---|---|---|
 | **structural** | 1-5, S1-S13 | `data/` from either route below |
 | **activity** | 6, 7, S14, S15 | the above, **plus** the MICrONS calcium recordings, which you build yourself |
+
+Everything is pinned to MICrONS materialization version **1718**, set by
+`MATERIALIZATION_VERSION` in `utils/connectome_types.py`. Root ids change between
+materializations, so both routes below use this one.
 
 ## Install
 
@@ -51,75 +55,52 @@ Two routes, same result. Pick one.
 python download_data_zenodo.py
 ```
 
-Pulls `data.zip` from Zenodo and unpacks it into `data/` — 1.4 GB down, 4.4 GB on disk,
+Pulls `data.zip` from Zenodo and unpacks it into `data/` — 2.0 GB down, 4.9 GB on disk,
 no account needed. Safe to re-run. `--delete-zip` drops the archive afterwards;
 `--force` overwrites an existing `data/`.
 
-> This is the deposit the badge at the top of this page links to. Cite
-> [10.5281/zenodo.21104425](https://doi.org/10.5281/zenodo.21104425) for the data across
-> all versions, or 10.5281/zenodo.21104426 for this one.
 
-### Route 2: rebuild it from the source (about a day)
+### Route 2: rebuild it from CAVE (hours)
 
 ```
 python download_data_cave.py                          # everything, in order
 python download_data_cave.py --steps raw,column,meshes # only these
 ```
 
-Rebuilds the same tables from the MICrONS public release with CAVEclient, for anyone who
-would rather not take an archive on trust. It needs a CAVE account — see the
-[MICrONS tutorial](https://tutorial.microns-explorer.org) for how to set one up.
+Use this to reproduce how we pull and format the raw CAVE data. It needs a CAVE account —
+the [MICrONS tutorial](https://tutorial.microns-explorer.org) shows how to set one up.
 
-Budget roughly a day of wall clock. Every step skips what is already on disk, so an
-interrupted run resumes where it stopped — and `--steps` runs a subset, which is usually
-what you want, because most of that day is spent on parts you may not need:
+If a run is interrupted, run the same command again and it picks up where it stopped.
+`--steps` runs a subset:
 
-| step | writes | size | time |
-|---|---|---|---|
-| `raw` | `data/raw_tables/` — the seven CAVE tables | 65 MB | ~2 min |
-| `column` | `data/micro_column_network/` — the 1,351-cell column | ~3 GB | ~a day |
-| `subnets` | `data/micro_column_network/subnetworks/` — figure 5, derived offline | 750 MB | ~2 min |
-| `meshes` | `data/micro_column_network/meshes/` — needed by figure 1, optional for 2, 7, S1 | ~1.4 GB | not measured |
-| `axon_pr` | `data/all_axon_pr_network/` — figure S3 only | not measured | ~a day |
+| step | writes | size |
+|---|---|---|
+| `raw` | `data/raw_tables/` — the seven CAVE tables | 65 MB |
+| `column` | `data/micro_column_network/` — the 1,351-cell column | ~1.9 GB |
+| `subnets` | `data/micro_column_network/subnetworks/` — figure 5, derived offline | ~780 MB |
+| `meshes` | `data/micro_column_network/meshes/` — needed by figure 1, optional for 2, 7, S1 | ~1.2 GB |
+| `axon_pr` | `data/all_axon_pr_network/` — figure S3 only | ~960 MB |
 
-`raw,column,subnets,meshes` covers the whole structural half bar S3, in about a day —
-`meshes` is in there because figure 1 always draws its cells from them. `axon_pr` is the
-other ~day, and buys S3 alone. And `--steps raw` on its own takes two minutes and is
-worth running even if you took route 1: it is the only source of
-`coregistration_manual_v4.csv`, which step 2 needs.
-
-Peak disk is well above the 4.4 GB the finished `data/` occupies, because the two
-per-neuron download loops leave intermediates behind — one pickle and one SWC per cell
-for both networks, plus a per-cell CSV resume cache for the spine tags. `axon_pr`
-dominates: it runs the same pipeline over every cell with a proofread axon, not just the
-column's 1,351. Leave room. The `raw` and `subnets` rows above are measured; the rest are
-inherited estimates from the script this was ported from and have not been re-timed.
-
-Both routes are pinned to materialization version **1718**
-(`MATERIALIZATION_VERSION` in `utils/connectome_types.py`). Pinning it is what makes the
-run reproducible: root ids are not stable across materializations.
+`raw,column,subnets,meshes` is the subset worth running: every structural figure except
+S3. Keep `meshes` in — figure 1 always draws its cells from them. `axon_pr` buys figure
+S3 and nothing else.
 
 ### Where the two routes differ
 
-Small and documented, none of it changing a figure. `download_data_cave.py`'s docstring
-has the full list; the short version:
+Both routes leave you with the same `data/`. The CAVE route also leaves per-cell
+intermediates behind — the `neurons_spines_*` folders under each network, a resume cache
+it combines into the spine tables. They are not in the Zenodo archive, and you can delete
+them once the run is done.
 
-- **`images/`** — the rendered dendrite branches and EM cut-outs behind figures 1, 2 and
-  S1 were made by hand and neither route can rebuild them, so they ship in the repository
-  itself rather than in `data/`. Nothing to download. (The Zenodo archive carries a copy
-  under `data/figures/`; it is redundant and can be deleted.)
-- **meshes** — Zenodo carries 6 of the 10 cell meshes. The four it lacks are four of
-  figure 7's six cells, so both routes serve figure 1, the one notebook that always draws
-  from meshes. The rest are read only when a notebook is set to meshes, which the other
-  notebooks are not by default (see *Meshes or skeletons?* below).
-- **one cell** — `864691136620192653` carries `-1` cable lengths in the published tables
-  (its skeleton had not been fetched when they were built). A rebuild gets real lengths,
-  so it clears `filter_valid_neuron_w_spines` and the filtered count is 1,140 rather than
-  the published 1,139.
+One difference in the contents, and it changes no figure. In the Zenodo archive, cell
+`864691136620192653` has `-1` for `axon_length`, `dendrite_length` and two dendrite
+distance columns — its skeleton had not been fetched when that table was built. The
+skeleton itself is fine and ships in both routes. A rebuild fills those columns in, so
+the cell passes `filter_valid_neuron_w_spines` and the filtered count is 1,140 rather
+than 1,139. `download_data_cave.py`'s docstring has two smaller ones.
 
-At this point figures **1-5** and **S1-S13** run — figure 1 draws its two cells from
-meshes, so a route 2 rebuild needs the `meshes` step, not just `raw` and `column`. If
-those are all you need, skip to [Reproducing the figures](#reproducing-the-figures).
+The dendrite renders and EM cut-outs behind figures 1, 2 and S1 come with neither route:
+they were made by hand, so they ship in `images/` in this repository.
 
 ---
 
@@ -136,7 +117,7 @@ under `data/activity/`.
 **Neither file is downloadable from here.** At 19 GB the calcium file is far too large to
 redistribute, so it is in neither Zenodo nor CAVE — it comes out of the MICrONS
 `microns_phase3_nda` DataJoint database, which is only reachable from inside that
-project's own container.
+project's own docker container.
 
 ### 2a. Extract the two H5 files
 
@@ -196,9 +177,8 @@ figures/supplementary/fig_s1.ipynb ->  figures/supplementary/fig_s1.png
 
 Figures 1, 2, 7 and S1 draw reconstructed cells, and a cell can be drawn either from its
 segmented surface mesh or from its skeleton. The meshes are what make the beautiful cells
-in the paper. They live in `data/micro_column_network/meshes/` — ~1.4 GB, on Zenodo (6 of
-the 10 cells) or all ten from `python download_data_cave.py --steps meshes` — and are
-markedly slower to draw.
+in the paper. They live in `data/micro_column_network/meshes/` — ~1.2 GB, all ten cells
+by either route — and are markedly slower to draw.
 
 **Figure 1 always draws from the meshes**, so it needs that folder.
 
@@ -252,11 +232,8 @@ than an unreadable error deep in the run.
 `filtered_syn_mat[i, j]` = synapses from neuron `i` (pre) → neuron `j` (post).
 `filtered_mapping` = `{matrix_index: root_id}`. Always rebuild after any neuron filtering.
 
-### Data version
-`MATERIALIZATION_VERSION = 1718` is defined in `utils/connectome_types.py` and must be
-passed to any CAVEclient call: `client.materialize.version = MATERIALIZATION_VERSION`.
 
-### Null models (figure 4 only)
+### Null models of figure 4
 Generated in memory with
 `generate_shuffles(bin_mat, mapping, neuron_clf_type, shuffle_mode, amount)`. No disk
 cache. `shuffle_mode` is `'cfg'` (configuration model).

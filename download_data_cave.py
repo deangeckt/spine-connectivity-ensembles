@@ -25,8 +25,18 @@ what makes the run reproducible: root ids are not stable across materializations
     python download_data_cave.py                    # everything, in order
     python download_data_cave.py --steps raw,column # only these
 
-Every step skips what is already on disk, so an interrupted run resumes where it
-stopped. Budget roughly a day of wall clock and ~25 GB. The two per-neuron CAVE loops
+Interruptions are expected — a day-long run meets dropped connections, Ctrl+C and the
+occasional reboot. None of them costs more than the file being written at that moment:
+every write lands in a `.part` sibling and is renamed into place only once it is
+complete, so a file that exists is a file that is finished, and every step works out
+what is left to do by looking at what is on disk. The per-cell loops fetch only the
+cells they are missing; the derived tables rebuild only when something they read has
+changed. Re-run the same command and it continues where it stopped. Transient CAVE
+errors are retried before a cell is given up on, and a run that ends with cells still
+missing says so and refuses to build the network-wide tables from a partial set
+(`--allow-incomplete` overrides that).
+
+Budget roughly a day of wall clock and ~25 GB. The two per-neuron CAVE loops
 (synapses, then spine tags) dominate — one query per neuron, no bulk endpoint. Peak RAM
 is in `connectome_outgoing_synapses.csv`, which holds every synapse of every neuron in
 the network at once: ~8 GB for the column, ~16 GB for the proofread-axon network.
@@ -89,8 +99,11 @@ a figure:
 import argparse
 import os
 import pickle
+import shutil
 import sys
+import time
 import warnings
+from contextlib import contextmanager
 
 # The progress lines below use arrows and box-drawing characters; a Windows console on a
 # non-UTF-8 code page raises UnicodeEncodeError on them mid-run.
@@ -123,6 +136,170 @@ RAW_TABLES_DIR = os.path.join(DATA_BASE_PATH, 'raw_tables')
 # those rows: clf_type 'both', cell_type 'Null', mtype 0.
 MOCK_NEURON = Neuron(root_id=-1, clf_type=ClfType.both, cell_type='Null', mtype=0,
                      position=np.ones(0), volume=0, pre_synapses=[], post_synapses=[])
+
+
+class BuildError(Exception):
+    """Something on disk is not what the run needs. `main` prints it without a traceback."""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# surviving an interrupted run
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Every step below works out what is left to do by looking at what is on disk, which is
+# only sound if a file on disk is a finished file. So nothing is written in place: each
+# write goes to a `.part` sibling and is renamed over the target once it is whole, and a
+# rename within a directory is atomic. Kill the run at any moment and what survives is
+# exactly the set of files that were already complete.
+
+PARTIAL_SUFFIX = '.part'
+
+# Files an earlier run left unreadable, removed as they were met. Reported by `main`.
+DISCARDED = []
+
+
+@contextmanager
+def atomic(path):
+    """Yield a staging path to write to, then move it onto `path` in one step."""
+    staging = path + PARTIAL_SUFFIX
+    try:
+        yield staging
+        os.replace(staging, path)
+    except BaseException:
+        # BaseException, not Exception: a Ctrl+C must not leave the stub behind either.
+        if os.path.exists(staging):
+            os.remove(staging)
+        raise
+
+
+def complete(path) -> bool:
+    """Whether `path` is a finished file. Empty means a write that never got going —
+    only possible for files left by a run that predates the staging above."""
+    return os.path.isfile(path) and os.path.getsize(path) > 0
+
+
+def clear_partials(*paths):
+    """Drop staging files a hard kill (a reboot, a power cut) left behind."""
+    for directory in paths:
+        if not os.path.isdir(directory):
+            continue
+        for name in os.listdir(directory):
+            if not name.endswith(PARTIAL_SUFFIX):
+                continue
+            leftover = os.path.join(directory, name)
+            if os.path.isdir(leftover):
+                shutil.rmtree(leftover, ignore_errors=True)
+            else:
+                os.remove(leftover)
+
+
+def listdir(directory, suffix) -> list[str]:
+    """Sorted names ending in `suffix` — anything mid-write is filtered out by name."""
+    if not os.path.isdir(directory):
+        return []
+    return sorted(name for name in os.listdir(directory) if name.endswith(suffix))
+
+
+def retry(call, what: str, attempts: int = 4, wait: float = 5.0):
+    """Run `call`, retrying the transient CAVE failures — a timeout, a 502, a reset.
+
+    One query per neuron for a day is long enough to meet a few. Without this each one
+    costs that cell an entire further pass over the list.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            if attempt == attempts:
+                raise
+            tqdm.write(f'  {what}: {type(e).__name__}: {e} — retrying in {wait:.0f}s '
+                       f'({attempt}/{attempts - 1})')
+            time.sleep(wait)
+            wait *= 2
+
+
+def discard_unreadable(path, error):
+    """Delete a file that will not load, so a later run fetches or rebuilds it."""
+    tqdm.write(f'  {os.path.basename(path)} will not load '
+               f'({type(error).__name__}: {error}) — removing it')
+    DISCARDED.append(path)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def load_pickle(path):
+    """The unpickled object, or None if the file is damaged — in which case it is gone."""
+    try:
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+    except MemoryError:
+        raise                       # the machine ran out, not a bad file — do not delete
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        discard_unreadable(path, e)
+        return None
+
+
+def _newest_mtime(inputs) -> float:
+    """The most recent mtime across `inputs`; a directory counts as the files in it.
+
+    The directory's own mtime counts too, and is the only thing that moves when a file
+    is *removed* from it — which is how a cell dropped for being damaged comes back
+    around as a rebuild of everything that was derived from it.
+    """
+    newest = 0.0
+    for path in inputs:
+        if os.path.isdir(path):
+            newest = max(newest, os.path.getmtime(path))
+            for entry in os.scandir(path):
+                if entry.is_file() and not entry.name.endswith(PARTIAL_SUFFIX):
+                    newest = max(newest, entry.stat().st_mtime)
+        elif os.path.exists(path):
+            newest = max(newest, os.path.getmtime(path))
+    return newest
+
+
+def up_to_date(outputs, inputs) -> bool:
+    """Whether every output exists and none of the inputs has moved since.
+
+    Existence alone would be the wrong test: a run interrupted part-way through the
+    per-cell downloads and then resumed has more cells than the tables a previous run
+    wrote, and those tables have to be built again.
+    """
+    if not all(complete(path) for path in outputs):
+        return False
+    return min(os.path.getmtime(path) for path in outputs) >= _newest_mtime(inputs)
+
+
+def already_built(label: str, outputs, inputs) -> bool:
+    if not up_to_date(outputs, inputs):
+        return False
+    print(f'  {label}: already built, and newer than everything it reads — skipping')
+    return True
+
+
+def save_connectivity_atomic(matrix, mapping, directory):
+    """`save_connectivity` writes two files; stage both so a kill leaves neither."""
+    staging = os.path.join(directory, 'staging' + PARTIAL_SUFFIX)
+    shutil.rmtree(staging, ignore_errors=True)
+    os.makedirs(staging)
+    try:
+        save_connectivity(matrix, mapping, staging, 'network_synapses')
+        for path in connectivity_files(staging):
+            os.replace(path, os.path.join(directory, os.path.basename(path)))
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def connectivity_files(directory) -> list[str]:
+    """What `save_connectivity(..., 'network_synapses')` leaves in `directory`."""
+    return [os.path.join(directory, 'network_synapses_matrix.npz'),
+            os.path.join(directory, 'network_synapses_mapping.pkl')]
 
 
 class Network:
@@ -205,12 +382,15 @@ def download_raw_tables(client):
     scripts/extract_calcium_data_via_docker.ipynb; the rest are build inputs only.
     """
     os.makedirs(RAW_TABLES_DIR, exist_ok=True)
+    clear_partials(RAW_TABLES_DIR)
     for table in RAW_TABLES:
         path = os.path.join(RAW_TABLES_DIR, f'{table}.csv')
-        if os.path.exists(path):
+        if complete(path):
             continue
         print(f'  {table}')
-        client.materialize.query_table(table).to_csv(path)
+        df = retry(lambda: client.materialize.query_table(table), f'table {table}')
+        with atomic(path) as staging:
+            df.to_csv(staging)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,12 +443,34 @@ def resolve_cell_types(root_ids, column_manual_ct: bool):
 
 
 def column_root_ids():
-    return list(pd.read_csv(COLUMN_TYPES_TABLE, index_col=0).pt_root_id)
+    ids = list(pd.read_csv(COLUMN_TYPES_TABLE, index_col=0).pt_root_id)
+    if not ids:
+        raise BuildError(f'{COLUMN_TYPES_TABLE} holds no cells. Delete it and re-run '
+                         f'`--steps raw` to fetch it again.')
+    return ids
+
+
+def _flag(series: pd.Series) -> pd.Series:
+    """A CAVE boolean column as a mask.
+
+    Postgres serves these as 't'/'f' and older CAVEclients hand them straight through,
+    but a newer one casts to real booleans, which `to_csv` then writes as True/False.
+    Testing `== 't'` matches nothing on a table saved by the second kind — silently, so
+    the step it feeds resolves zero cells and everything after it is empty.
+    """
+    return series.astype(str).str.strip().str.lower().isin({'t', 'true', '1', 'yes'})
 
 
 def proofread_axon_root_ids():
     df = pd.read_csv(PROOFREADING_TABLE, index_col=0)
-    return list(df[df.status_axon == 't'].pt_root_id)
+    ids = list(df[_flag(df.status_axon)].pt_root_id)
+    if not ids:
+        values = sorted(set(df.status_axon.astype(str)))[:6]
+        raise BuildError(
+            f'No cell in {PROOFREADING_TABLE} has a proofread axon — status_axon holds '
+            f'{values}, none of which reads as true. The axon_pr step has nothing to '
+            f'build from; check that table, or skip the step with --steps.')
+    return ids
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -292,10 +494,11 @@ def download_neurons(net: Network, ids, cell_types, m_types, client):
     Two CAVE queries per cell — incoming and outgoing — and by far the longest step.
     """
     os.makedirs(net.neurons, exist_ok=True)
+    clear_partials(net.neurons)
     ct = cell_types.drop_duplicates('pt_root_id').set_index('pt_root_id')
     mt = m_types.drop_duplicates('pt_root_id').set_index('pt_root_id')
 
-    todo = [i for i in ids if not os.path.exists(os.path.join(net.neurons, f'{i}.pkl'))]
+    todo = [i for i in ids if not complete(os.path.join(net.neurons, f'{i}.pkl'))]
     print(f'{net.name}: {len(ids) - len(todo)} neurons on disk, {len(todo)} to fetch')
     for cell_id in tqdm(todo, desc='neurons'):
         try:
@@ -309,31 +512,40 @@ def download_neurons(net: Network, ids, cell_types, m_types, client):
                 mtype=mt_row['cell_type'],
                 position=np.array(process_str_position(ct_row['pt_position'])),
                 volume=ct_row['volume'],
-                pre_synapses=_synapse_table_to_synapses(client.materialize.synapse_query(post_ids=cell_id)),
-                post_synapses=_synapse_table_to_synapses(client.materialize.synapse_query(pre_ids=cell_id)),
+                pre_synapses=_synapse_table_to_synapses(retry(
+                    lambda: client.materialize.synapse_query(post_ids=cell_id),
+                    f'neuron {cell_id} incoming')),
+                post_synapses=_synapse_table_to_synapses(retry(
+                    lambda: client.materialize.synapse_query(pre_ids=cell_id),
+                    f'neuron {cell_id} outgoing')),
             )
-            with open(os.path.join(net.neurons, f'{cell_id}.pkl'), 'wb') as f:
-                pickle.dump(neuron, f, protocol=pickle.HIGHEST_PROTOCOL)
+            with atomic(os.path.join(net.neurons, f'{cell_id}.pkl')) as staging:
+                with open(staging, 'wb') as f:
+                    pickle.dump(neuron, f, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as e:
-            print(f'  neuron {cell_id}: {e}')
+            tqdm.write(f'  neuron {cell_id}: {e}')
 
 
 def download_skeletons(net: Network, ids, client):
     """One SWC per cell, ten at a time — the bulk endpoint's limit."""
     os.makedirs(net.skeletons, exist_ok=True)
-    todo = [i for i in ids if not os.path.exists(os.path.join(net.skeletons, f'{i}.swc'))]
+    clear_partials(net.skeletons)
+    todo = [i for i in ids if not complete(os.path.join(net.skeletons, f'{i}.swc'))]
     print(f'{net.name}: {len(ids) - len(todo)} skeletons on disk, {len(todo)} to fetch')
     batches = [todo[i:i + 10] for i in range(0, len(todo), 10)]
     for batch in tqdm(batches, desc='skeletons'):
         try:
-            for root_id, swc_df in client.skeleton.get_bulk_skeletons(output_format='swc', root_ids=batch).items():
-                swc_df.to_csv(os.path.join(net.skeletons, f'{root_id}.swc'),
-                              sep=' ', header=False, index=False)
+            skeletons = retry(
+                lambda: client.skeleton.get_bulk_skeletons(output_format='swc', root_ids=batch),
+                f'skeleton batch {batch[0]}…')
+            for root_id, swc_df in skeletons.items():
+                with atomic(os.path.join(net.skeletons, f'{root_id}.swc')) as staging:
+                    swc_df.to_csv(staging, sep=' ', header=False, index=False)
         except Exception as e:
-            print(f'  skeleton batch {batch[0]}…: {e}')
+            tqdm.write(f'  skeleton batch {batch[0]}…: {e}')
 
 
-def download_spines(net: Network, ids, client, incoming: bool):
+def download_spines(net: Network, ids, client, incoming: bool, allow_incomplete=False):
     """Spine / shaft / soma tags per synapse, from `synapse_target_predictions_ssa_v2`.
 
     https://tutorial.microns-explorer.org/release_manifests/version-1718.html
@@ -342,26 +554,49 @@ def download_spines(net: Network, ids, client, incoming: bool):
     concatenated. Those per-cell CSVs are only a resume cache — delete them once the
     combined table exists.
     """
-    raw_dir = os.path.join(net.root, f"neurons_spines_{'incoming' if incoming else 'outgoing'}")
-    os.makedirs(raw_dir, exist_ok=True)
+    direction = 'incoming' if incoming else 'outgoing'
+    raw_dir = os.path.join(net.root, f'neurons_spines_{direction}')
+    out = net.spine_table if incoming else net.spine_table_out
 
-    todo = [i for i in ids if not os.path.exists(os.path.join(raw_dir, f'{i}.csv'))]
-    print(f"{net.name}: {'incoming' if incoming else 'outgoing'} spines — "
+    # Before the loop, not after it: the per-cell cache is disposable and documented as
+    # such, so the combined table standing newer than it means the step is done. Testing
+    # this afterwards would re-query every cell to rebuild a table that is already there.
+    if already_built(f'{direction} spine table', [out], [raw_dir]):
+        return
+
+    os.makedirs(raw_dir, exist_ok=True)
+    clear_partials(raw_dir)
+
+    todo = [i for i in ids if not complete(os.path.join(raw_dir, f'{i}.csv'))]
+    print(f'{net.name}: {direction} spines — '
           f'{len(ids) - len(todo)} on disk, {len(todo)} to fetch')
     for root_id in tqdm(todo, desc='spines'):
         try:
             table = client.materialize.tables.synapse_target_predictions_ssa_v2
-            df = (table(post_pt_root_id=root_id) if incoming else table(pre_pt_root_id=root_id)).query()
-            df[['target_id', 'tag', 'pre_pt_root_id', 'post_pt_root_id']].to_csv(
-                os.path.join(raw_dir, f'{root_id}.csv'), index=False)
+            df = retry(lambda: (table(post_pt_root_id=root_id) if incoming
+                                else table(pre_pt_root_id=root_id)).query(),
+                       f'spines {root_id}')
+            with atomic(os.path.join(raw_dir, f'{root_id}.csv')) as staging:
+                df[['target_id', 'tag', 'pre_pt_root_id', 'post_pt_root_id']].to_csv(
+                    staging, index=False)
         except Exception as e:
-            print(f'  spines {root_id}: {e}')
+            tqdm.write(f'  spines {root_id}: {e}')
+
+    # The combined table is one table over all the cells, so a cell still missing its
+    # tags is a hole in it — and the usual reason for one is a connection that dropped,
+    # which the next run simply re-fetches. Leave it unwritten rather than wrong.
+    missing = [i for i in ids if not complete(os.path.join(raw_dir, f'{i}.csv'))]
+    if missing and not allow_incomplete:
+        print(f'  {len(missing)} of {len(ids)} cells have no {direction} spine tags yet — '
+              f'not writing {os.path.basename(out)} from a partial set. Re-run to fetch '
+              f'them, or pass --allow-incomplete.')
+        return
 
     print(f'  combining {len(ids)} cells')
     keep = set(ids)
     frames = []
-    for fname in tqdm(os.listdir(raw_dir), desc='combine'):
-        root_id = int(fname.replace('.csv', ''))
+    for fname in tqdm(listdir(raw_dir, '.csv'), desc='combine'):
+        root_id = int(fname[:-len('.csv')])
         if root_id not in keep:
             continue
         df = pd.read_csv(os.path.join(raw_dir, fname))
@@ -373,8 +608,13 @@ def download_spines(net: Network, ids, client, incoming: bool):
         df['post_pt_root_id'] = root_id
         frames.append(df)
 
-    out = net.spine_table if incoming else net.spine_table_out
-    pd.concat(frames, ignore_index=True).to_csv(out, index=False)
+    if not frames:
+        print(f'  no {direction} spine tags on disk — nothing to combine, '
+              f'leaving {os.path.basename(out)} alone')
+        return
+
+    with atomic(out) as staging:
+        pd.concat(frames, ignore_index=True).to_csv(staging, index=False)
     print(f'  wrote {out}')
 
 
@@ -387,13 +627,32 @@ def download_meshes(client):
     step all ten are present and the flag can be flipped.
     """
     os.makedirs(MICRO_COLUMN.meshes, exist_ok=True)
+    clear_partials(MICRO_COLUMN.meshes)
+
+    # meshparty writes into its own disk cache, so the cache is a staging directory and
+    # the finished file is moved out of it. That also settles the name: meshparty 2.0.3
+    # caches a mesh as `<id>_<lod>.h5` (`mesh()` defaults to lod=0), while `load_full_mesh`
+    # — and the existence check below — want a plain `<id>.h5`, so whatever the fetch
+    # leaves behind is renamed to that on the way out.
+    staging = os.path.join(MICRO_COLUMN.meshes, 'staging' + PARTIAL_SUFFIX)
+    os.makedirs(staging, exist_ok=True)
     mm = trimesh_io.MeshMeta(cv_path=client.info.segmentation_source(),
-                             disk_cache_path=MICRO_COLUMN.meshes)
-    for root_id in FIGURE_MESHES:
-        if os.path.exists(os.path.join(MICRO_COLUMN.meshes, f'{root_id}.h5')):
-            continue
-        print(f'  mesh {root_id}')
-        mm.mesh(seg_id=root_id)
+                             disk_cache_path=staging)
+    try:
+        for root_id in FIGURE_MESHES:
+            final = os.path.join(MICRO_COLUMN.meshes, f'{root_id}.h5')
+            if complete(final):
+                continue
+            print(f'  mesh {root_id}')
+            retry(lambda: mm.mesh(seg_id=root_id), f'mesh {root_id}')
+
+            fetched = [n for n in listdir(staging, '.h5') if n.startswith(str(root_id))]
+            if not fetched:
+                print(f'  mesh {root_id}: the fetch left no file behind — skipping it')
+                continue
+            os.replace(os.path.join(staging, fetched[0]), final)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -469,24 +728,38 @@ def calculate_neuron_comp_lengths(neuron: Neuron, skeleton_dir):
         print(f'  comp_lengths failed for {neuron.root_id}: {e}')
 
 
-def build_em_neurons(net: Network):
+def build_em_neurons(net: Network) -> bool:
     """`neurons/` → `em_neurons/`: the same cells, keeping only within-network synapses.
 
     The `ds_*` attributes are measured first, over the whole volume, because that is the
     only place the outside-the-network synapses are still there to count. Cells left
     with no internal synapse at all are dropped.
+
+    False if a cell was lost to a damaged file, which makes every table below it wrong.
     """
+    damaged = len(DISCARDED)
     os.makedirs(net.em_neurons, exist_ok=True)
-    network_ids = {int(f.split('.')[0]) for f in os.listdir(net.neurons)}
+    clear_partials(net.em_neurons)
+    network_ids = {int(f[:-len('.pkl')]) for f in listdir(net.neurons, '.pkl')}
     nucleus_id = (pd.read_csv(NUCLEUS_TABLE, index_col=0)
                   .drop_duplicates('pt_root_id').set_index('pt_root_id')['id'])
 
-    todo = [f for f in sorted(os.listdir(net.neurons))
-            if not os.path.exists(os.path.join(net.em_neurons, f))]
+    # Each em_neuron keeps only the synapses whose partner is also in the network, so it
+    # is derived from the whole of `neurons/`, not from its own cell. Once that set
+    # changes — a cell refetched after a failure, a damaged one dropped — every em_neuron
+    # is out of date, not just the new one, and the ones already rebuilt stay put.
+    newest_neuron = _newest_mtime([net.neurons])
+
+    def stale(filename):
+        path = os.path.join(net.em_neurons, filename)
+        return not complete(path) or os.path.getmtime(path) < newest_neuron
+
+    todo = [f for f in listdir(net.neurons, '.pkl') if stale(f)]
     print(f'{net.name}: {len(network_ids) - len(todo)} em_neurons on disk, {len(todo)} to build')
     for filename in tqdm(todo, desc='em_neurons'):
-        with open(os.path.join(net.neurons, filename), 'rb') as f:
-            neuron: Neuron = pickle.load(f)
+        neuron: Neuron = load_pickle(os.path.join(net.neurons, filename))
+        if neuron is None:
+            continue
 
         pre_synapses = [syn for syn in neuron.pre_synapses if syn.pre_pt_root_id in network_ids]
         post_synapses = [syn for syn in neuron.post_synapses if syn.post_pt_root_id in network_ids]
@@ -510,21 +783,37 @@ def build_em_neurons(net: Network):
         if neuron.root_id in nucleus_id.index:
             neuron.nucleus_id = int(nucleus_id[neuron.root_id])
         else:
-            print(f'  missing nucleus_id for {neuron.root_id}')
+            tqdm.write(f'  missing nucleus_id for {neuron.root_id}')
 
         calculate_synapse_dist_to_soma(neuron, net.skeletons)
         calculate_neuron_comp_lengths(neuron, net.skeletons)
 
-        with open(os.path.join(net.em_neurons, filename), 'wb') as f:
-            pickle.dump(neuron, f, protocol=pickle.HIGHEST_PROTOCOL)
+        with atomic(os.path.join(net.em_neurons, filename)) as staging:
+            with open(staging, 'wb') as f:
+                pickle.dump(neuron, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    if len(DISCARDED) > damaged:
+        print(f'  {len(DISCARDED) - damaged} cell(s) were lost to a damaged file. Every '
+              f'table below this reads all the cells at once, so none is written from '
+              f'what is left — re-run to fetch those cells again.')
+        return False
+    return True
 
 
 def load_neurons_dict(neuron_path) -> dict[int, Neuron]:
+    """Every neuron in a folder. Returns None if any of them turned out to be damaged:
+    the tables built from this are network-wide, and a dropped cell is a wrong table."""
+    damaged = len(DISCARDED)
     neurons = {}
-    for filename in tqdm(os.listdir(neuron_path), desc=os.path.basename(neuron_path)):
-        with open(os.path.join(neuron_path, filename), 'rb') as f:
-            neuron: Neuron = pickle.load(f)
+    for filename in tqdm(listdir(neuron_path, '.pkl'), desc=os.path.basename(neuron_path)):
+        neuron: Neuron = load_pickle(os.path.join(neuron_path, filename))
+        if neuron is not None:
             neurons[neuron.root_id] = neuron
+
+    if len(DISCARDED) > damaged:
+        print(f'  {len(DISCARDED) - damaged} neuron file(s) in {os.path.basename(neuron_path)} '
+              f'were damaged and have been removed — re-run to fetch and rebuild them')
+        return None
     return neurons
 
 
@@ -640,7 +929,12 @@ def synapse_table(synapses: list[Synapse], neurons_dict: dict[int, Neuron]) -> p
 
 def build_connectome_tables(net: Network):
     """`connectome_neurons.csv` and `connectome_synapses.csv`, from `em_neurons/`."""
+    if already_built('connectome tables', [net.neuron_table, net.syn_table], [net.em_neurons]):
+        return
+
     neurons = load_neurons_dict(net.em_neurons)
+    if neurons is None:
+        return
 
     pre_synapses, post_synapses = [], []
     for n in tqdm(neurons.values(), desc='collect'):
@@ -657,15 +951,23 @@ def build_connectome_tables(net: Network):
         syn.compartment_in_pre_syn_soma = twin.compartment_in_pre_syn_soma
 
     print(f'  {len(neurons)} neurons, {len(pre_synapses)} synapses')
-    neuron_table(neurons).to_csv(net.neuron_table)
-    synapse_table(pre_synapses, neurons).to_csv(net.syn_table)
+    with atomic(net.neuron_table) as staging:
+        neuron_table(neurons).to_csv(staging)
+    with atomic(net.syn_table) as staging:
+        synapse_table(pre_synapses, neurons).to_csv(staging)
     print(f'  wrote {net.neuron_table}\n  wrote {net.syn_table}')
 
 
 def build_outgoing_synapse_table(net: Network):
     """`connectome_outgoing_synapses.csv` — every synapse these cells *make*, including
     the ones landing outside the network. The peak-memory step."""
+    if already_built('outgoing synapse table', [net.out_syn_table],
+                     [net.neurons, net.skeletons]):
+        return
+
     neurons = load_neurons_dict(net.neurons)     # full-volume scope, not em_neurons
+    if neurons is None:
+        return
 
     synapses = []
     for neuron in tqdm(neurons.values(), desc='dist to soma'):
@@ -673,7 +975,8 @@ def build_outgoing_synapse_table(net: Network):
         synapses.extend(neuron.post_synapses)
 
     print(f'  {len(synapses)} outgoing synapses')
-    synapse_table(synapses, neurons).to_csv(net.out_syn_table)
+    with atomic(net.out_syn_table) as staging:
+        synapse_table(synapses, neurons).to_csv(staging)
     print(f'  wrote {net.out_syn_table}')
 
 
@@ -685,6 +988,11 @@ def build_connectivity_matrix(net: Network):
     documented `[pre, post]` convention comes from.
     """
     os.makedirs(net.connectivity, exist_ok=True)
+    clear_partials(net.connectivity)
+    if already_built('connectivity matrix', connectivity_files(net.connectivity),
+                     [net.neuron_table, net.syn_table]):
+        return
+
     order = list(pd.read_csv(net.neuron_table, index_col=0).root_id)
     index = {root_id: i for i, root_id in enumerate(order)}
 
@@ -695,7 +1003,7 @@ def build_connectivity_matrix(net: Network):
             matrix[index[post_id], index[pre_id]] += 1
 
     mapping = {i: root_id for i, root_id in enumerate(order)}
-    save_connectivity(sparse.csr_matrix(matrix), mapping, net.connectivity, 'network_synapses')
+    save_connectivity_atomic(sparse.csr_matrix(matrix), mapping, net.connectivity)
     print(f'  {len(order)} neurons, {matrix.sum()} synapses, '
           f'{np.count_nonzero(matrix) / matrix.size * 100:.2f}% of pairs connected')
 
@@ -703,6 +1011,33 @@ def build_connectivity_matrix(net: Network):
 # ─────────────────────────────────────────────────────────────────────────────
 # derived: subnetworks (figure 5)
 # ─────────────────────────────────────────────────────────────────────────────
+
+SUBNETWORK_TABLES = ('connectome_neurons.csv', 'connectome_synapses.csv', 'spine_table.csv',
+                     'connectome_outgoing_synapses.csv', 'spine_table_outgoing.csv')
+
+
+def subnetwork_files(folder) -> list[str]:
+    """Everything one subnetwork folder holds when it is finished."""
+    return ([os.path.join(folder, name) for name in SUBNETWORK_TABLES] +
+            connectivity_files(os.path.join(folder, 'connectivity_matrix')))
+
+
+def subnetwork_bands(neurons_df) -> list[tuple]:
+    """(fraction, min_x, max_x) per slab, each half the width of the one before it."""
+    x = neurons_df.pt_position_xt
+    max_x, min_x = max(x), min(x)
+    dx = max_x - min_x
+    fraction = 1.0
+
+    bands = []
+    while dx > 10:
+        max_x = max_x - dx // 4
+        min_x = min_x + dx // 4
+        dx = dx // 2
+        fraction /= 2
+        bands.append((fraction, min_x, max_x))
+    return bands
+
 
 def build_subnetworks():
     """Four nested slabs of the column, each half the width of the last.
@@ -720,22 +1055,28 @@ def build_subnetworks():
                                   SPINE_TABLE, SPINE_TABLE_OUTGOING)
 
     neurons_df = load_neurons_table(use_column_manual_ct=True)
+    sources = [MICRO_COLUMN.neuron_table, MICRO_COLUMN.syn_table, MICRO_COLUMN.out_syn_table,
+               MICRO_COLUMN.spine_table, MICRO_COLUMN.spine_table_out]
+
+    bands = subnetwork_bands(neurons_df)
+    folders = {fraction: os.path.join(DATA_BASE_PATH, NETWORK_NAME, 'subnetworks', str(fraction))
+               for fraction, _, _ in bands}
+    todo = [band for band in bands
+            if not up_to_date(subnetwork_files(folders[band[0]]), sources)]
+    if not todo:
+        print(f'  all {len(bands)} subnetworks are built and newer than the column '
+              f'tables they are cut from — skipping')
+        return
+
+    # Only now the expensive reads: `connectome_outgoing_synapses.csv` is the peak-RAM
+    # load of the whole script, and an interrupted run has no reason to pay it again to
+    # rewrite subnetworks that are already there.
     syn_df = load_synapses_position_transformed()
     spine_df = pd.read_csv(SPINE_TABLE)
     outgoing_syn_df = load_synapses_position_transformed(base_syn_table_path=CONNECTOME_PRE_SYN_TABLE_PATH)
     spine_df_outgoing = pd.read_csv(SPINE_TABLE_OUTGOING)
 
-    x = neurons_df.pt_position_xt
-    max_x, min_x = max(x), min(x)
-    dx = max_x - min_x
-    fraction = 1.0
-
-    while dx > 10:
-        max_x = max_x - dx // 4
-        min_x = min_x + dx // 4
-        dx = dx // 2
-        fraction /= 2
-
+    for fraction, min_x, max_x in todo:
         neurons = neurons_df[(neurons_df.pt_position_xt <= max_x) &
                              (neurons_df.pt_position_xt >= min_x)].copy()
         sub_syn = syn_df[syn_df.pre_id.isin(neurons.root_id) &
@@ -745,16 +1086,19 @@ def build_subnetworks():
         sub_syn_out = outgoing_syn_df[outgoing_syn_df.pre_id.isin(neurons.root_id)].copy()
         sub_spine_out = spine_df_outgoing[spine_df_outgoing.pre_pt_root_id.isin(neurons.root_id)].copy()
 
-        folder = os.path.join(DATA_BASE_PATH, NETWORK_NAME, 'subnetworks', str(fraction))
+        folder = folders[fraction]
         os.makedirs(folder, exist_ok=True)
+        clear_partials(folder)
         print(f'  {fraction}: {len(neurons)} neurons, {len(sub_syn)} synapses, '
               f'{len(sub_spine)} incoming spines')
 
-        neurons.to_csv(os.path.join(folder, 'connectome_neurons.csv'))
-        sub_syn.to_csv(os.path.join(folder, 'connectome_synapses.csv'))
-        sub_spine.to_csv(os.path.join(folder, 'spine_table.csv'))
-        sub_syn_out.to_csv(os.path.join(folder, 'connectome_outgoing_synapses.csv'))
-        sub_spine_out.to_csv(os.path.join(folder, 'spine_table_outgoing.csv'))
+        for df, name in ((neurons, 'connectome_neurons.csv'),
+                         (sub_syn, 'connectome_synapses.csv'),
+                         (sub_spine, 'spine_table.csv'),
+                         (sub_syn_out, 'connectome_outgoing_synapses.csv'),
+                         (sub_spine_out, 'spine_table_outgoing.csv')):
+            with atomic(os.path.join(folder, name)) as staging:
+                df.to_csv(staging)
 
         # Row order here is first appearance in the synapse table, not the neuron table —
         # a subnetwork's matrix only ever covers the cells that have an internal synapse.
@@ -767,46 +1111,87 @@ def build_subnetworks():
 
         conn_dir = os.path.join(folder, 'connectivity_matrix')
         os.makedirs(conn_dir, exist_ok=True)
-        save_connectivity(sparse.csr_matrix(matrix),
-                          {i: root_id for i, root_id in enumerate(ordered)},
-                          conn_dir, 'network_synapses')
+        save_connectivity_atomic(sparse.csr_matrix(matrix),
+                                 {i: root_id for i, root_id in enumerate(ordered)},
+                                 conn_dir)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # steps
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_full_network(net: Network, root_ids, client):
+def neurons_complete(net: Network, ids, allow_incomplete: bool) -> bool:
+    """Whether every cell's synapse pickle landed — the input all four tables below read.
+
+    They are built from the whole set at once, so a cell missing here is a hole in every
+    one of them. The usual cause is a connection that dropped somewhere in a day of
+    queries, and the fix is another run, which re-fetches only the cells it has to. (The
+    spine tables are built from none of this and report their own gaps, in
+    `download_spines`.)
+    """
+    # A skeleton is the one thing the pipeline already tolerates losing: a cell without
+    # one keeps the -1 cable lengths it was born with, which is how 864691136620192653
+    # ships in the published tables. Worth saying, not worth stopping for.
+    no_skeleton = [i for i in ids if not complete(os.path.join(net.skeletons, f'{i}.swc'))]
+    if no_skeleton:
+        print(f'  {len(no_skeleton)} of {len(ids)} cells have no skeleton — their cable '
+              f'lengths and synapse-to-soma distances stay -1')
+
+    missing = [i for i in ids if not complete(os.path.join(net.neurons, f'{i}.pkl'))]
+    if not missing:
+        return True
+
+    print(f'  {len(missing)} of {len(ids)} cells never got their synapses: '
+          f'{", ".join(str(i) for i in missing[:3])}{" …" if len(missing) > 3 else ""}')
+    if allow_incomplete:
+        print('  --allow-incomplete: building the tables from what is here anyway.')
+        return True
+    print('  Not building the network-wide tables from a partial set. Re-run the same '
+          'command to fetch what is missing — it picks up exactly here.')
+    return False
+
+
+def build_full_network(net: Network, root_ids, client, allow_incomplete=False):
     """Everything for one network folder: download, then derive."""
     ids, cell_types, m_types = resolve_cell_types(root_ids, net.column_manual_ct)
+    if not ids:
+        raise BuildError(f'{net.name}: none of the {len(root_ids)} cells survived the cell-type '
+                         f'tables in {RAW_TABLES_DIR}. Nothing to build — check those tables.')
+
     download_neurons(net, ids, cell_types, m_types, client)
     download_skeletons(net, ids, client)
-    download_spines(net, ids, client, incoming=True)
-    download_spines(net, ids, client, incoming=False)
-    build_em_neurons(net)
+    download_spines(net, ids, client, incoming=True, allow_incomplete=allow_incomplete)
+    download_spines(net, ids, client, incoming=False, allow_incomplete=allow_incomplete)
+
+    if not neurons_complete(net, ids, allow_incomplete):
+        return
+
+    if not build_em_neurons(net):
+        return
+
     build_connectome_tables(net)
     build_outgoing_synapse_table(net)
     build_connectivity_matrix(net)
 
 
-def step_raw(client):
+def step_raw(client, args):
     download_raw_tables(client)
 
 
-def step_column(client):
-    build_full_network(MICRO_COLUMN, column_root_ids(), client)
+def step_column(client, args):
+    build_full_network(MICRO_COLUMN, column_root_ids(), client, args.allow_incomplete)
 
 
-def step_subnets(client):
+def step_subnets(client, args):
     build_subnetworks()
 
 
-def step_meshes(client):
+def step_meshes(client, args):
     download_meshes(client)
 
 
-def step_axon_pr(client):
-    build_full_network(ALL_AXON_PR, proofread_axon_root_ids(), client)
+def step_axon_pr(client, args):
+    build_full_network(ALL_AXON_PR, proofread_axon_root_ids(), client, args.allow_incomplete)
 
 
 STEPS = {
@@ -817,12 +1202,19 @@ STEPS = {
     'axon_pr': step_axon_pr,
 }
 
+# `subnets` is cut from files the other steps already wrote, so on its own it needs
+# neither a connection nor a CAVE account.
+OFFLINE_STEPS = {'subnets'}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1],
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--steps', default=','.join(STEPS),
                         help=f"comma-separated subset of: {', '.join(STEPS)} (default: all, in order)")
+    parser.add_argument('--allow-incomplete', action='store_true',
+                        help='build the network-wide tables even when some cells are still '
+                             'missing their downloads (default: stop and say which)')
     args = parser.parse_args()
 
     steps = [s.strip() for s in args.steps.split(',') if s.strip()]
@@ -830,13 +1222,27 @@ def main():
     if unknown:
         parser.error(f"unknown step(s): {', '.join(unknown)}. Pick from: {', '.join(STEPS)}")
 
-    client = cave_client()
-    for name in steps:
-        print(f'\n=== {name} ===')
-        STEPS[name](client)
+    client = None if set(steps) <= OFFLINE_STEPS else cave_client()
+    try:
+        for name in steps:
+            print(f'\n=== {name} ===')
+            STEPS[name](client, args)
+    except KeyboardInterrupt:
+        print('\nStopped. Nothing half-written was kept — re-run the same command to '
+              'continue from here.')
+        return 130
+    except BuildError as e:
+        print(f'\n{e}')
+        return 1
+
+    if DISCARDED:
+        print(f'\n{len(DISCARDED)} damaged file(s) left by an earlier run were removed. '
+              f'Re-run the same command to fetch and rebuild them.')
+        return 1
 
     print('\nDone. data/activity/ is still yours to build — see the README.')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
