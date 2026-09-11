@@ -51,15 +51,12 @@ def plot_spine_along_axon(ax,
                           show_legend=False,
                           cross_dist_textsize=10,
                           show_cross_distance=True,
-                          title='',
                           aver_by='micro',
-                          err_type='sem',
                           num_single_bins=10,
                           num_pop_bins=100,
                           max_distance=1200,
                           min_synapses_per_bin=1,
-                          axon_bin_fontsize=10,
-                          inh_pref=False):
+                          axon_bin_fontsize=10):
     """
     Plot spine fraction vs. distance for a population average and individual axons.
 
@@ -68,10 +65,7 @@ def plot_spine_along_axon(ax,
     aver_by : str, 'micro' or 'macro'
         'micro': Pooled average (synapse-weighted).
         'macro': Mean of means (neuron-weighted).
-    err_type : str, 'sem' or 'sd'
-        'sem': Standard Error of the Mean. Shaded area shrinks as N increases.
-        'sd': Standard Deviation. Shaded area shows the diversity of the population.
-    if inh_pref is true - we calculate the prefrence to targeting E v I (not related to spines)
+    Error bars are the standard error of the mean.
     """
 
     dist_col = 'dist_to_pre_syn_soma'
@@ -92,10 +86,7 @@ def plot_spine_along_axon(ax,
     # ==========================================
     if aver_by == 'micro':
         counts_all_pop, _ = np.histogram(outgoing_syn[dist_col], bins=pop_bins)
-        if inh_pref:
-            spines_only_pop = outgoing_syn[outgoing_syn.post_clf_type == 'E']
-        else:
-            spines_only_pop = outgoing_syn[outgoing_syn.tag == 'spine']
+        spines_only_pop = outgoing_syn[outgoing_syn.tag == 'spine']
         counts_spines_pop, _ = np.histogram(spines_only_pop[dist_col], bins=pop_bins)
 
         valid_bins_pop = counts_all_pop > 0
@@ -106,10 +97,7 @@ def plot_spine_along_axon(ax,
         
         sd_pop = np.sqrt(spine_fraction_pop * (1 - spine_fraction_pop))
         
-        if err_type == 'sem':
-            err_pop = sd_pop / np.sqrt(counts_all_pop)
-        else:
-            err_pop = sd_pop
+        err_pop = sd_pop / np.sqrt(counts_all_pop)
 
     elif aver_by == 'macro':
         unique_ids = outgoing_syn['pre_id'].unique()
@@ -118,10 +106,7 @@ def plot_spine_along_axon(ax,
         for node_id in unique_ids:
             axon_data = outgoing_syn[outgoing_syn['pre_id'] == node_id]
             c_all, _ = np.histogram(axon_data[dist_col], bins=pop_bins)
-            if inh_pref:
-                c_spines, _ = np.histogram(axon_data[axon_data.post_clf_type == 'E'][dist_col], bins=pop_bins)
-            else:
-                c_spines, _ = np.histogram(axon_data[axon_data.tag == 'spine'][dist_col], bins=pop_bins)
+            c_spines, _ = np.histogram(axon_data[axon_data.tag == 'spine'][dist_col], bins=pop_bins)
             
             frac = np.full(len(c_all), np.nan)
             valid_mask = c_all > 0
@@ -141,19 +126,15 @@ def plot_spine_along_axon(ax,
             spine_fraction_pop[valid_bins_pop] = np.nanmean(all_fractions[:, valid_bins_pop], axis=0)
             sd_pop[valid_bins_pop] = np.nanstd(all_fractions[:, valid_bins_pop], axis=0)
             
-        if err_type == 'sem':
-            n_neurons_per_bin = np.sum(~np.isnan(all_fractions), axis=0)
-            # Avoid divide by zero for err_pop
-            err_pop = np.zeros_like(sd_pop)
-            err_pop[valid_bins_pop] = sd_pop[valid_bins_pop] / np.sqrt(n_neurons_per_bin[valid_bins_pop])
-        else:
-            err_pop = sd_pop
+        n_neurons_per_bin = np.sum(~np.isnan(all_fractions), axis=0)
+        # Avoid divide by zero for err_pop
+        err_pop = np.zeros_like(sd_pop)
+        err_pop[valid_bins_pop] = sd_pop[valid_bins_pop] / np.sqrt(n_neurons_per_bin[valid_bins_pop])
         
 
     # --- Plotting the Population Line ---
-    label_suffix = "SEM" if err_type == 'sem' else "SD"
     ax.plot(pop_bin_centers[valid_bins_pop], spine_fraction_pop[valid_bins_pop],
-            color=pop_color, lw=2.0, label=f'Pop. Avg ({aver_by}, {label_suffix})', zorder=5)
+            color=pop_color, lw=2.0, label=f'Pop. Avg ({aver_by}, SEM)', zorder=5)
     
     ax.fill_between(pop_bin_centers[valid_bins_pop],
                     spine_fraction_pop[valid_bins_pop] - err_pop[valid_bins_pop],
@@ -188,10 +169,7 @@ def plot_spine_along_axon(ax,
         single_syn = outgoing_syn[outgoing_syn['pre_id'] == node_id]
 
         counts_all_single, _ = np.histogram(single_syn[dist_col], bins=single_bins)
-        if inh_pref:
-            spines_only_single = single_syn[single_syn.post_clf_type == 'E']
-        else:
-            spines_only_single = single_syn[single_syn.tag == 'spine']
+        spines_only_single = single_syn[single_syn.tag == 'spine']
 
         counts_spines_single, _ = np.histogram(spines_only_single[dist_col], bins=single_bins)
 
@@ -216,8 +194,6 @@ def plot_spine_along_axon(ax,
                     fontsize=axon_bin_fontsize, ha='center', va='bottom', alpha=0.8, zorder=10)
 
     # Formatting
-    if title:
-        ax.set_title(title)
     ax.set_ylabel('Fraction of synapses on spines')
     ax.set_ylim(0, 1.05)
     ax.set_xlim(0, 1200)

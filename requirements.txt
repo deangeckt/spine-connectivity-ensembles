@@ -1,13 +1,26 @@
-numpy>=2.0
-pandas>=2.0
-matplotlib>=3.8
-scipy>=1.12
-seaborn>=0.13
-tqdm>=4.0
+# Exact versions this codebase was developed and tested with, on Python 3.12.
+# See README for the install instructions.
+
+numpy==2.3.2
+pandas==2.3.2
+matplotlib==3.10.6
+scipy==1.16.1
+seaborn==0.13.2
+scikit-learn==1.7.1
+tqdm==4.67.1
+h5py==3.14.0
 
 # MICrONS / connectome-specific
-meshparty>=2.0
-skeleton-plot>=0.1
-standard-transform>=1.4
-caveclient>=8.0
-imageryclient>=1.0
+caveclient==8.0.1
+meshparty==2.0.3
+skeleton-plot==0.1.0
+standard-transform==1.4.1
+imageryclient==1.0.4
+
+# Notebook environment (figures/ and scripts/ are Jupyter notebooks)
+jupyterlab==4.4.1
+ipykernel==6.30.1
+
+# Note: scripts/extract_calcium_data_via_docker.ipynb imports `microns_phase3`
+# (DataJoint), which is only available inside the MICrONS docker image and is
+# deliberately not listed here.

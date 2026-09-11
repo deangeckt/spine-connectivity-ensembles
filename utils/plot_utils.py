@@ -1,40 +1,5 @@
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.lines import Line2D
-import skeleton_plot as skelplot
-from meshparty.skeleton import Skeleton
-import matplotlib as mpl
-from neuron import Neuron
-from matplotlib.colors import LogNorm
-from connectome_types import m_types, col_cell_types_ordered, cell_types
-from matplotlib.collections import LineCollection
 from matplotlib.collections import PolyCollection
-
-comp_colors = {
-    1: 'Gray',
-    2: 'Blue',
-    3: 'Black',
-    4: 'Red'
-}
-
-comp_labels = {
-    1: 'Soma',
-    2: 'Axon',
-    3: 'Basal Dendrite',
-    4: 'Apical Dendrite',
-}
-
-full_legend_elements = []
-for comp_id, color in comp_colors.items():
-    if comp_id in comp_labels and 1 <= comp_id <= 4:
-        full_legend_elements.append(Line2D([], [], color=color, lw=3, label=comp_labels[comp_id]))
-
-semi_legend_elements = [
-    Line2D([], [], color=comp_colors[3], lw=3, label='Dendrite'),
-    Line2D([], [], color=comp_colors[2], lw=3, label='Axon'),
-]
-
-inv_comp_labels = {v: k for k, v in comp_labels.items()}
 
 depths = {
     '2/3': 115.1112491335,
@@ -45,9 +10,8 @@ depths = {
     'wm': 922.5861720311
 }
 
-ex_color =  "#FF0000" # red, dark red: "#A2142F"
+ex_color =  "#FF0000"
 inh_color =  "#0072BD"
-uk_color = '#7f395e'
 ei_palette = {"I": inh_color, "E": ex_color}
 
 colors = [
@@ -68,72 +32,15 @@ colors = [
     "#8B008B",  # Dark Magenta (Distinct from Purple #984EA3 and Pink #F781BF)
 ]
 
-auto_ct_color_dict = {ct: colors[i] for i, ct in enumerate(cell_types[:11])}
-ct_color_dict = {ct: colors[i] for i, ct in enumerate(col_cell_types_ordered)}
-mtype_color_dict =  {mt: mpl.colormaps['tab20'](i) for i, mt in enumerate(m_types)}
 cell_types = ['L23', 'L4', 'L5', 'L6', 'BC', 'MC', 'BPC', 'NGC']
-ex_cell_types = ['L23', 'L4', 'L5', 'L6']
 inh_cell_types = ['BC', 'MC', 'BPC', 'NGC']
 four_syn_colors_on_dark_bg = ['#12AFED', '#13B413', '#E22929', '#FFC000']
-ex_colors = {ct: color for ct, color in zip(ex_cell_types, four_syn_colors_on_dark_bg)}
 inh_colors = {ct: color for ct, color in zip(inh_cell_types, four_syn_colors_on_dark_bg)}
 
 microns_ex_depths = {'L2/3': 250, 'L4': 350, 'L5': 510, 'L6': 740}
 
     
-def plot_layers(ax, color='gray', override_l6_with_y_lim=None, is_horiz=False, fontsize=12):
-    prev_height = 0
-    for line_label, height in microns_ex_depths.items():
-        if override_l6_with_y_lim is not None and line_label == 'L6':
-            height = override_l6_with_y_lim
-        if is_horiz:
-            ax.axvline(x=height, color=color, linestyle='--', alpha=0.55)
-            ax.text((height+prev_height)/2, ax.get_ylim()[1], f' {line_label}', color=color,
-                       verticalalignment='top', horizontalalignment='center', weight="bold", rotation=45, fontsize=fontsize)
-        else:
-            ax.axhline(y=height, color=color, linestyle='--', alpha=0.55)
-            ax.text(ax.get_xlim()[1], (height+prev_height)/2, f' {line_label}', color=color, fontsize=fontsize,
-                        verticalalignment='center', horizontalalignment='right', weight="bold")
-        prev_height = height
 
-def plot_synapse_on_sk(df, ax, color_by='cell_type', cmap=None, alpha=0.65,
-                       min_scatter_size=3,
-                       max_scatter_size=15,
-                       z_order=1,
-                       colors=None,
-                       marker='o'):
-
-    def syn_df_fix(df, min_=3, max_=15):
-        min_size, max_size = min_, max_
-        df['scatter_size'] = np.array((df['size']))
-        df['scatter_size'] = (df['scatter_size'] - df['scatter_size'].min()) / (
-                df['scatter_size'].max() - df['scatter_size'].min())
-        df['scatter_size'] = df['scatter_size'] * (max_size - min_size) + min_size
-        df['pos'] = df['pos'].apply(np.array)
-
-    syn_df_fix(df, min_scatter_size, max_scatter_size)
-
-    if cmap is None:
-        cmap = mpl.colormaps['tab10']
-
-    unique_values = df[color_by].unique()
-
-    if colors is None:
-        num_colors = min(len(unique_values), 10)  # Limit to 10 colors (tab10 has 10 colors)
-        colors = {value: cmap(i / 10) for i, value in enumerate(unique_values[:num_colors])}
-
-    for value in unique_values:
-        subset = df[df[color_by] == value]
-        ax.scatter(subset['pos'].apply(lambda x: x[0]),
-                   subset['pos'].apply(lambda x: x[1]),
-                   zorder=z_order, marker=marker,
-                   c=[colors[value]], s=subset['scatter_size'], alpha=alpha, label=value)
-
-    lgnd = ax.legend(scatterpoints=1, title=color_by)
-    for handle in lgnd.legend_handles:
-        handle.set_sizes([40.0])
-
-    return ax
 
 def _polylines_from_edges(vertices, edges):
     """

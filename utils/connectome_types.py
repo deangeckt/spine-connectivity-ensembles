@@ -1,9 +1,15 @@
 import os
 from enum import Enum
 
-# Absolute path to standalone/data/micro_column_network — works wherever this folder is copied
+# Absolute path to data/micro_column_network — works wherever this repo is checked out
 _MCN = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'data', 'micro_column_network'))
 _DATA = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+_ACTIVITY = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'data', 'activity'))
+
+# The pre-rendered dendrite images and EM cut-outs behind figures 1, 2 and S1. These
+# live in the repository, not in data/: the branch renders were made by hand in VAST and
+# neither download route can rebuild them. See the README.
+IMAGES_BASE_PATH            = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'images'))
 
 DATA_BASE_PATH              = _DATA
 NETWORK_NAME                = 'micro_column_network'
@@ -19,22 +25,13 @@ CONNECTIVITY_DIR            = os.path.join(_MCN, 'connectivity_matrix')
 SPINE_TABLE                 = os.path.join(_MCN, 'spine_table.csv')
 SPINE_TABLE_OUTGOING        = os.path.join(_MCN, 'spine_table_outgoing.csv')
 
-# Not included in standalone data — kept as None so existing utils import without errors
-NEURON_IDS_TABLE                    = None
-MOTIFS_DIR                          = None
-ORACLE_SCORES_TABLE                 = None
-ALLEN_COL_ALL_SYNAPSES_TABLE        = None
-CONNECTOME_NEURON_MorphoPy_TABLE_PATH = None
-CONNECTOME_NEURON_neuroM_TABLE_PATH   = None
-CONNECTOME_NEURON_SHUFFLED_TABLE_PATH = None
-SKELETONS_S3_DIR_PATH               = None
-SKELETONS_S3_SWC_DIR_PATH           = None
-
-
-class SynapseSide(str, Enum):
-    post = 'post'
-    pre = 'pre'
-
+# Activity / ensembles (figures 6, 7, S14, S15). NONE of this is in the Zenodo
+# snapshot: the two H5 files are built with scripts/extract_calcium_data_via_docker.ipynb
+# inside the MICrONS database container, and the ensemble results with
+# scripts/ensemble_run.py, which reads them. See the README.
+CALCIUM_H5_PATH             = os.path.join(_ACTIVITY, 'coreg_manual_v4_calcium_v2.h5')
+STIMULI_H5_PATH             = os.path.join(_ACTIVITY, 'microns_per_scan_stimuli.h5')
+ENSEMBLE_RESULTS_DIR        = os.path.join(_ACTIVITY, 'ensembles')
 
 class ClfType(str, Enum):
     excitatory = 'E'

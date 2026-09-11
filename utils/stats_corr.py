@@ -7,7 +7,7 @@ from scipy.optimize import curve_fit
 
 
 def add_reg_line(x, y, ax, color, add_reg_text='none', reg_text_font_size = 16,
-                 linestyle=':', linewidth=1, line_alpha=1, only_stars=True, log=True):
+                 linestyle=':', linewidth=1, line_alpha=1):
     valid_mask = ~np.isnan(x) & ~np.isnan(y) & ~np.isinf(x) & ~np.isinf(y)
     x = x[valid_mask]
     y = y[valid_mask]
@@ -15,10 +15,7 @@ def add_reg_line(x, y, ax, color, add_reg_text='none', reg_text_font_size = 16,
     pearson_r, p_value = pearsonr(x, y)
     p_str  = f'p={p_value:.1e}' if p_value < 0.001 else f'p={p_value:.3f}'
 
-    if only_stars:
-        full_only_r_text = f'$R$={pearson_r:.2f} {p_to_stars(p_value)}'
-    else:
-        full_only_r_text = f'$R$={pearson_r:.2f}, {p_str} {p_to_stars(p_value)}'
+    full_only_r_text = f'$R$={pearson_r:.2f} {p_to_stars(p_value)}'
 
     slope, intercept = np.polyfit(x, y, 1)
     r_squared = pearson_r ** 2
@@ -49,12 +46,11 @@ def add_reg_line(x, y, ax, color, add_reg_text='none', reg_text_font_size = 16,
         ax.text(x_text, y_text, full_only_r_text,
                 color=color, fontsize=reg_text_font_size, ha='left', va='top', alpha=0.9,
                 bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1))
-    if log:
-        print(f'R={pearson_r:.2f} R^2: {r_squared:.2f} slope: {slope:.2f} intercept: {intercept:.2f}, p={p_str}')
+    print(f'R={pearson_r:.2f} R^2: {r_squared:.2f} slope: {slope:.2f} intercept: {intercept:.2f}, p={p_str}')
 
 
 def add_log_curve(df, x_col, y_col, ax, lw=1.2, alpha=1, linestyle='--', color='gray',
-                  fontsize=12, add_rho_text=True, only_stars=True, log=True):
+                  fontsize=12):
     clean = df.dropna(subset=[x_col, y_col])
     clean = clean[clean[x_col] > 0]
     xs = np.linspace(clean[x_col].min(), clean[x_col].max(), 300)
@@ -63,8 +59,7 @@ def add_log_curve(df, x_col, y_col, ax, lw=1.2, alpha=1, linestyle='--', color='
         popt, _ = curve_fit(log_fit, clean[x_col], clean[y_col], maxfev=5000)
         a, b = popt
         ax.plot(xs, log_fit(xs, *popt), color=color, lw=lw, alpha=alpha, linestyle=linestyle)
-        if log:
-            print(f' log fit: a={a:.4f}, b={b:.4f}')
+        print(f' log fit: a={a:.4f}, b={b:.4f}')
     except RuntimeError:
         print(f'log fit failed')
 
@@ -72,26 +67,21 @@ def add_log_curve(df, x_col, y_col, ax, lw=1.2, alpha=1, linestyle='--', color='
     x_text, y_text = 0.98, 0.02
 
     p_str  = f'p={p:.1e}' if p < 0.001 else f'p={p:.3f}'
-    if only_stars:
-        full_text = f'$ρ$={spearman_rho:.2f} {p_to_stars(p)}'
-    else:
-        full_text = f'$ρ$={spearman_rho:.2f}, {p_str} {p_to_stars(p)}'
+    full_text = f'$ρ$={spearman_rho:.2f} {p_to_stars(p)}'
 
-    if add_rho_text:
-        _orig_text = ax.text
-        def _text_once(*args, **kwargs):
-            ax.text = _orig_text
-            kwargs['transform'] = ax.transAxes
-            kwargs['ha'] = 'right'
-            kwargs['va'] = 'bottom'
-            return _orig_text(*args, **kwargs)
+    _orig_text = ax.text
+    def _text_once(*args, **kwargs):
+        ax.text = _orig_text
+        kwargs['transform'] = ax.transAxes
+        kwargs['ha'] = 'right'
+        kwargs['va'] = 'bottom'
+        return _orig_text(*args, **kwargs)
 
-        ax.text = _text_once
-        ax.text(x_text, y_text , full_text,
-                color=color, fontsize=fontsize, ha='left', va='top', alpha=1,
-                bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1))
-    if log:
-        print(f'ρ={spearman_rho:.2f}, p={p_str}')
+    ax.text = _text_once
+    ax.text(x_text, y_text , full_text,
+            color=color, fontsize=fontsize, ha='left', va='top', alpha=1,
+            bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1))
+    print(f'ρ={spearman_rho:.2f}, p={p_str}')
     return full_text
 
 
@@ -155,8 +145,8 @@ def binned_trend(x, y, bins=8, error_type='sem', min_n=1):
     return np.array(bin_centers), np.array(y_mean), np.array(y_err), bin_edges, np.array(bin_counts)
 
 
-def binned_mul_plot(dfs, names, x_list, y_list, cmap, n_bins=12, min_n=1, ax=None, plot_error_bars=True,
-                    plot_polygons=True, markers=None, ls=None, markersize=5, bin_amount=[0], bin_amount_text_size=12, error_type='sem',
+def binned_mul_plot(dfs, names, x_list, y_list, cmap, n_bins=12, min_n=1, ax=None,
+                    markers=None, ls=None, markersize=5, bin_amount=[0], bin_amount_text_size=12, error_type='sem',
                     add_reg_line=False, add_reg_text=False, add_r_to_legend=True, add_r_parentesis=True):
 
     if ax is None:
@@ -173,16 +163,14 @@ def binned_mul_plot(dfs, names, x_list, y_list, cmap, n_bins=12, min_n=1, ax=Non
         # --- PASS n_bins AND min_n TO binned_trend ---
         bin_centers, y_mean, y_err, bin_edges, bin_counts = binned_trend(x, y, bins=n_bins, error_type=error_type, min_n=min_n)
 
-        if plot_error_bars:
-            ax.errorbar(bin_centers, y_mean, yerr=y_err, fmt='o-', capsize=3, color=color, alpha=0.2)
+        ax.errorbar(bin_centers, y_mean, yerr=y_err, fmt='o-', capsize=3, color=color, alpha=0.2)
 
         if add_r_parentesis:
             leg_label = f'{name} (R={pearson_r:.2f} {p_to_stars(p_value)})' if add_r_to_legend else name
         else:
             leg_label = f'{name} R={pearson_r:.2f} {p_to_stars(p_value)}' if add_r_to_legend else name
 
-        if plot_polygons:
-            ax.plot(bin_centers, y_mean,
+        ax.plot(bin_centers, y_mean,
                 color=color,
                 marker=marker,
                 ls=linestyle,
@@ -191,12 +179,12 @@ def binned_mul_plot(dfs, names, x_list, y_list, cmap, n_bins=12, min_n=1, ax=Non
                 alpha=1,
                 label=leg_label)
 
-            ax.fill_between(bin_centers,
-                            y_mean - y_err,
-                            y_mean + y_err,
-                            color=color,
-                            alpha=0.15,
-                            edgecolor=None)
+        ax.fill_between(bin_centers,
+                        y_mean - y_err,
+                        y_mean + y_err,
+                        color=color,
+                        alpha=0.15,
+                        edgecolor=None)
 
         # --- PLOT ANNOTATED REGRESSION LINE ---
         if add_reg_line:
