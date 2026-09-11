@@ -13,17 +13,6 @@ def idan_fit(x, rho_inf, d0):
     return rho_inf * (x / (x + d0))
 
 
-def biphasic_spine_fit(d, rho0, rho_inf, d0, A, mu, sigma):
-    """
-    Saturating + Gaussian bump model.
-    d: distance (x-axis). rho0: baseline. rho_inf: asymptote.
-    d0: half-saturation distance. A: bump amplitude. mu: bump center. sigma: bump width.
-    """
-    saturation = rho0 + (rho_inf - rho0) * (d / (d + d0))
-    bump = A * np.exp(-((d - mu) ** 2) / (2 * sigma ** 2))
-    return saturation + bump
-
-
 def calc(node_id, outgoing_syn, dist_col='dist_to_pre_syn_soma',
          log=True, min_synapses_per_bin=0, single_bins=80, single_bin_centers=None):
     if single_bin_centers is None:
@@ -48,29 +37,18 @@ def calc(node_id, outgoing_syn, dist_col='dist_to_pre_syn_soma',
 
 
 def fit(x_coords, y_coords, single_bin_centers, counts_all_single, valid_bins_single,
-        ax=None, log=True, use_basic_fit=True):
+        ax=None, log=True):
     counts = counts_all_single[valid_bins_single]
     sigmas = 1.0 / np.sqrt(counts)
 
-    if use_basic_fit:
-        fit_func = idan_fit
-        popt, _ = curve_fit(
-            fit_func, x_coords, y_coords,
-            bounds=([0, 1e-5], [1.0, np.inf]),
-            maxfev=10000, sigma=sigmas, absolute_sigma=False
-        )
-        rho_inf_opt, d0_opt = popt
-        fit_label = f'Basic Fit: $\\rho_\\infty$={rho_inf_opt:.2f}, $d_0$={d0_opt:.1f}'
-    else:
-        fit_func = biphasic_spine_fit
-        popt, _ = curve_fit(
-            fit_func, x_coords, y_coords,
-            bounds=([0.0, 0.5, 1.0, 0.0, 10.0, 5.0], [0.5, 1.0, 1200.0, 0.5, 200.0, 150.0]),
-            p0=[0.2, 0.8, 150, 0.15, 50, 30],
-            maxfev=10000, sigma=sigmas, absolute_sigma=False
-        )
-        rho0_opt, rho_inf_opt, d0_opt, A_opt, mu_opt, sigma_opt = popt
-        fit_label = f'Biphasic: $\\rho_\\infty$={rho_inf_opt:.2f}, Bump@ {mu_opt:.0f}µm'
+    fit_func = idan_fit
+    popt, _ = curve_fit(
+        fit_func, x_coords, y_coords,
+        bounds=([0, 1e-5], [1.0, np.inf]),
+        maxfev=10000, sigma=sigmas, absolute_sigma=False
+    )
+    rho_inf_opt, d0_opt = popt
+    fit_label = f'Basic Fit: $\\rho_\\infty$={rho_inf_opt:.2f}, $d_0$={d0_opt:.1f}'
 
     smooth_xs = np.linspace(0, single_bin_centers.max(), 300)
     if ax is not None:
@@ -97,7 +75,7 @@ def fit(x_coords, y_coords, single_bin_centers, counts_all_single, valid_bins_si
 
 
 def fit_pop(outgoing_syn, num_pop_bins=120, max_distance=1200, ax=None,
-            log=False, use_basic_fit=True, dist_col='dist_to_pre_syn_soma', pop_color=None):
+            log=False, dist_col='dist_to_pre_syn_soma', pop_color=None):
     """
     Fit population-average spine fraction vs. distance and plot.
     pop_color: line color (defaults to first matplotlib cycle color).
@@ -155,7 +133,7 @@ def fit_pop(outgoing_syn, num_pop_bins=120, max_distance=1200, ax=None,
         single_bin_centers=pop_bin_centers,
         counts_all_single=counts_all_pop,
         valid_bins_single=valid_bins_pop,
-        ax=ax, log=log, use_basic_fit=use_basic_fit
+        ax=ax, log=log
     )
     return r_squared_w
 
@@ -182,7 +160,7 @@ def fit_single_wrap(outgoing_syn_df, single_bin_width, max_distance, ax,
                 ha='center', va='bottom', alpha=0.8)
 
     w_mse, r_squared_w = fit(x_coords, y_coords, single_bin_centers, counts_all_single,
-                              valid_bins_single, ax, log=log, use_basic_fit=True)
+                              valid_bins_single, ax, log=log)
     return w_mse, r_squared_w
 
 

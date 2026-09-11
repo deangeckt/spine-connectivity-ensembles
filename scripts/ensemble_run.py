@@ -53,7 +53,8 @@ from ensembles import (
     build_shared_input_strength_series, sample_matched_controls,
     run_spine_targeting_bootstrap, run_connection_probability_bootstrap,
     run_shared_input_bootstrap, run_shared_input_strength_bootstrap,
-    results_filename, shared_input_by_size, collect_run_numbers, format_run_numbers_md,
+    ENSEMBLE_RUN_STEM, ensemble_results_path,
+    shared_input_by_size, collect_run_numbers, format_run_numbers_md,
 )
 
 
@@ -68,7 +69,6 @@ METHODS = ['lds', 'ecker']
 # Detection runs on the repeated "oracle" movie clips only, and on the trial residual:
 # each clip's average over its ~10 repeats is subtracted from every repeat, so ensembles
 # reflect trial-to-trial co-fluctuation rather than shared visual tuning.
-STIMULUS_TYPE = 'oracle'
 ORACLE_TRIAL_RESIDUAL = True
 
 # A scan needs at least this many recorded, structurally matched excitatory neurons.
@@ -82,18 +82,13 @@ RANDOM_SEED = 0
 
 # ── ICA detector (Lopes-dos Santos et al., 2013) ──────────────────────────────
 LDS_N_SURROGATES         = 1000    # circular shifts behind the eigenvalue threshold
-LDS_K_FROM               = 'auto'  # take K from the shuffle-derived threshold
 LDS_MEMBERSHIP_THRESHOLD = 2       # member if its weight exceeds 2 SD of the component
 
 # ── Population-event detector (Carrillo-Reid 2015; Herzog 2021; Ecker 2024) ───
-HRZ_K_RANGE                = (2, 20)   # cluster counts scanned, Davies-Bouldin picks one
-HRZ_N_SHUFFLES_BIN         = 100       # surrogates behind the network-event threshold
-HRZ_N_SHUFFLES_MEMBER      = 10000     # surrogates behind the membership test
-HRZ_NORMALIZE_NEURONS      = 'std'
-HRZ_MEMBER_ALPHA           = 0.05
-HRZ_MEMBER_CORRECTION      = 'fdr_bh'  # Benjamini-Hochberg across all neuron x cluster tests
-HRZ_REGRESS_OUT_POPULATION = False
-HRZ_BIN_SIG_N_STD          = False
+HRZ_K_RANGE           = (2, 20)   # cluster counts scanned, Davies-Bouldin picks one
+HRZ_N_SHUFFLES_BIN    = 100       # surrogates behind the network-event threshold
+HRZ_N_SHUFFLES_MEMBER = 10000     # surrogates behind the membership test
+HRZ_MEMBER_ALPHA      = 0.05      # Benjamini-Hochberg q across all neuron x cluster tests
 
 # ── Matched control groups ────────────────────────────────────────────────────
 # Per ensemble, up to N_CONTROLS random groups of the same size, drawn from excitatory
@@ -107,23 +102,18 @@ HRZ_BIN_SIG_N_STD          = False
 # measures that read internal wiring; `sample_matched_controls` handles it per call.
 N_CONTROLS           = 1000
 # Attempts the rejection sampler may spend per ensemble before giving up and keeping
-# whatever it found. The tightest ensembles accept roughly one draw in 10^5-10^6, so the
-# old 500_000 left nine of the 52 with fewer than 100 control groups each — and those
-# nine carry a third of figure 6E's synapses, which made its null (and the significance
-# star that follows from it) swing between runs. The sampler now tests candidates in
-# numpy batches at ~10^6/s instead of ~10^4/s, so this budget costs minutes rather than
-# hours. Ensembles that fill early stop early; only the tight ones spend it all.
+# whatever it found. The tightest ensembles accept roughly one draw in 10^5-10^6, and a
+# pool left short there is what makes a null swing between runs. The sampler tests
+# candidates in numpy batches at ~10^6/s, so this budget costs minutes. Ensembles that
+# fill early stop early; only the tight ones spend it all.
 MAX_ATTEMPTS         = 200_000_000
 
 # Replicates of the paired bootstrap that turns the drawn control groups into a null.
 # Cheap — it only resamples groups already in hand — and 1000 is too few to pin a
-# p-value near a significance threshold: at 1000 the figure 6E p-value moved over
-# 0.006-0.022 across bootstrap seeds. See "Did my run reproduce the paper?" in the README.
+# p-value near a significance threshold.
 N_BOOTSTRAP          = 200_000
-MATCH_COMPACTNESS    = True
 COMPACTNESS_TOL      = 0.35
 COMPACTNESS_FLOOR_UM = 15.0
-MATCH_INDEGREE       = True
 INDEGREE_TOL         = 0.35
 
 
@@ -131,7 +121,6 @@ def method_kwargs_for(method):
     return {
         'lds': dict(
             n_surrogates=LDS_N_SURROGATES,
-            k_from=LDS_K_FROM,
             membership_threshold_std=LDS_MEMBERSHIP_THRESHOLD,
             max_member_frac=MAX_MEMBER_FRAC,
             random_state=RANDOM_SEED,
@@ -140,11 +129,7 @@ def method_kwargs_for(method):
             k_range=HRZ_K_RANGE,
             n_shuffles_bin=HRZ_N_SHUFFLES_BIN,
             n_shuffles_member=HRZ_N_SHUFFLES_MEMBER,
-            normalize_neurons=HRZ_NORMALIZE_NEURONS,
             member_alpha=HRZ_MEMBER_ALPHA,
-            member_correction=HRZ_MEMBER_CORRECTION,
-            bin_sig_n_std=HRZ_BIN_SIG_N_STD,
-            regress_out_population=HRZ_REGRESS_OUT_POPULATION,
             max_member_frac=MAX_MEMBER_FRAC,
             random_state=RANDOM_SEED,
         ),
@@ -159,7 +144,7 @@ def load_shared():
     neurons_df = load_neurons_table(use_column_manual_ct=True)
     ex_df      = neurons_df[neurons_df.clf_type == 'E'].copy()
     ex_func_data = load_ex_functional_data_by_root_id(
-        CALCIUM_H5_PATH, neurons_df, ex_df.root_id, align='interp')
+        CALCIUM_H5_PATH, neurons_df, ex_df.root_id)
 
     spine_df = pd.read_csv(SPINE_TABLE)
     syn_df   = load_synapses_position_transformed(base_syn_table_path=CONNECTOME_SYN_TABLE_PATH)
@@ -187,9 +172,8 @@ def load_shared():
           f'recorded in ≥1 scan: {len(recorded_root_ids)}')
 
     pool = build_ex_pool_arrays(spine_df, full_column_root_ids)
-    pos_array, _ = build_pool_pos_arrays(pool, enabled=MATCH_COMPACTNESS)
-    deg_array = (build_pool_indegree_array(pool, syn_df, full_column_root_ids)
-                 if MATCH_INDEGREE else None)
+    pos_array = build_pool_pos_arrays(pool)
+    deg_array = build_pool_indegree_array(pool, syn_df, full_column_root_ids)
 
     # Shared input strength, per neuron: the mean within-column out-degree of all its
     # presynaptic partners — the same measure figure 4 plots.
@@ -249,11 +233,10 @@ def detect_all_scans(method, shared):
     for (sess, sc) in scan_keys:
         try:
             Z, rec_ids, _fps = build_activity_matrix(
-                ex_func_data, sess, sc, use_spikes=True,
-                stimulus_type=STIMULUS_TYPE, h5_stim_path=STIMULI_H5_PATH,
+                ex_func_data, sess, sc, STIMULI_H5_PATH,
                 trial_residual=ORACLE_TRIAL_RESIDUAL)
         except ValueError:
-            _skip('no_stimulus_frames' if STIMULUS_TYPE else 'no_traces', sess, sc); continue
+            _skip('no_stimulus_frames', sess, sc); continue
         except RuntimeError:
             _skip('no_traces', sess, sc); continue
         if Z.shape[0] < MIN_NEURONS_PER_SCAN:
@@ -331,7 +314,7 @@ def run_wiring_measures(shared, all_ensembles_df, ensemble_members_by_scank):
         all_ensembles_df, label_col='scan_k', seed_fn=seed_fn, pool=pool,
         n_controls=N_CONTROLS, max_attempts=MAX_ATTEMPTS,
         label_to_members=ensemble_members_by_scank,
-        pos_array=pos_array if MATCH_COMPACTNESS else None,
+        pos_array=pos_array,
         dist_tol=COMPACTNESS_TOL, abs_floor_um=COMPACTNESS_FLOOR_UM,
         eligible_idx=eligible_idx, return_groups=True,
     )
@@ -349,7 +332,7 @@ def run_wiring_measures(shared, all_ensembles_df, ensemble_members_by_scank):
         syn_df=syn_df, all_ex_root_ids=eligible_root_ids,
         pool=pool, n_controls=N_CONTROLS, seed=RANDOM_SEED,
         max_attempts=MAX_ATTEMPTS, n_boot=N_BOOTSTRAP,
-        label_to_members=ensemble_members_by_scank if MATCH_COMPACTNESS else None,
+        label_to_members=ensemble_members_by_scank,
         pos_array=pos_array, dist_tol=COMPACTNESS_TOL, abs_floor_um=COMPACTNESS_FLOOR_UM,
         eligible_idx=eligible_idx)
 
@@ -363,17 +346,16 @@ def run_wiring_measures(shared, all_ensembles_df, ensemble_members_by_scank):
     _, indegree_matched_groups = sample_matched_controls(
         all_ensembles_df, label_col='scan_k', seed_fn=seed_fn, pool=pool,
         n_controls=N_CONTROLS, max_attempts=MAX_ATTEMPTS, match_edges=False,
-        label_to_members=ensemble_members_by_scank if MATCH_COMPACTNESS else None,
-        pos_array=pos_array if MATCH_COMPACTNESS else None,
+        label_to_members=ensemble_members_by_scank,
+        pos_array=pos_array,
         dist_tol=COMPACTNESS_TOL, abs_floor_um=COMPACTNESS_FLOOR_UM,
-        degree_array=(shared['deg_array'] if MATCH_INDEGREE else None),
-        degree_tol=INDEGREE_TOL,
+        degree_array=shared['deg_array'], degree_tol=INDEGREE_TOL,
         eligible_idx=eligible_idx, return_groups=True,
     )
 
     shared_input_strength = run_shared_input_strength_bootstrap(
         ensemble_members_by_scank, pool, indegree_matched_groups, shared['input_strength'],
-        mode='mean', n_null=N_BOOTSTRAP, seed=RANDOM_SEED,
+        n_null=N_BOOTSTRAP, seed=RANDOM_SEED,
         name='shared input strength',
         value_label='shared input strength (mean pre-synaptic out-degree)')
 
@@ -394,7 +376,7 @@ def run_wiring_measures(shared, all_ensembles_df, ensemble_members_by_scank):
         # recoverable from the measure dicts alone, so the run records them alongside.
         'n_column_ex':               len(full_column_root_ids),
         'n_recorded':                len(recorded_root_ids),
-        'stimulus_type':             STIMULUS_TYPE,
+        'stimulus_type':             'oracle',
         'oracle_trial_residual':     ORACLE_TRIAL_RESIDUAL,
         'n_controls':                N_CONTROLS,
         # carried out so shared input can reuse them without resampling
@@ -407,10 +389,6 @@ def run_wiring_measures(shared, all_ensembles_df, ensemble_members_by_scank):
 # Shared presynaptic input — figures 6D, 6E, S14D, S14E
 # ══════════════════════════════════════════════════════════════════════════════
 def run_shared_input(shared, all_ensembles_df, ensemble_members_by_scank, base):
-    # The spine-targeting groups come from the same pool under the same constraints, so
-    # shared input can reuse them — unless in-degree matching is on, which they lack.
-    precomputed = None if MATCH_INDEGREE else base['_matched_groups']
-
     # `all_ex_root_ids` stays the full column here: it decides which post-synaptic neurons
     # have a presynaptic set at all. Narrowing it to the eligible pool would erase the
     # observed ensembles' own shared-input counts, since members are not in that pool.
@@ -420,10 +398,9 @@ def run_shared_input(shared, all_ensembles_df, ensemble_members_by_scank, base):
         pool=shared['pool'],
         label_col='scan_k', n_controls=N_CONTROLS, seed=RANDOM_SEED,
         max_attempts=MAX_ATTEMPTS, n_boot=N_BOOTSTRAP,
-        pos_array=(shared['pos_array'] if (MATCH_COMPACTNESS and MATCH_INDEGREE) else None),
+        pos_array=shared['pos_array'],
         dist_tol=COMPACTNESS_TOL, abs_floor_um=COMPACTNESS_FLOOR_UM,
         degree_array=shared['deg_array'], degree_tol=INDEGREE_TOL,
-        precomputed_groups=precomputed,
         eligible_idx=base['_eligible_idx'],
         syn_with_tags=shared['syn_with_tags'],
     )
@@ -436,35 +413,24 @@ def save_results(method, results):
     regenerated on every run.
     """
     os.makedirs(ENSEMBLE_RESULTS_DIR, exist_ok=True)
-    fname = results_filename(
-        method,
-        stim=STIMULUS_TYPE if STIMULUS_TYPE else 'all_frames',
-        pool='disjoint',
-        dist=MATCH_COMPACTNESS,
-        residual=ORACLE_TRIAL_RESIDUAL,
-        degree=MATCH_INDEGREE,
-    )
-    results_path = os.path.join(ENSEMBLE_RESULTS_DIR, fname)
+    stem = ENSEMBLE_RUN_STEM.format(method=method)
+    results_path = ensemble_results_path(method)
     with open(results_path, 'wb') as f:
         pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
     print(f'Saved results      → {results_path}')
 
-    numbers_path = os.path.join(ENSEMBLE_RESULTS_DIR, fname[:-4] + '_numbers.md')
+    numbers_path = os.path.join(ENSEMBLE_RESULTS_DIR, stem + '_numbers.md')
     md = format_run_numbers_md(
         collect_run_numbers(results, label=method),
         d_size=shared_input_by_size(results),
-        heading=f'{method} — {fname[:-4]}')
+        heading=f'{method} — {stem}')
     with open(numbers_path, 'w', encoding='utf-8') as f:
         f.write(md + '\n')
     print(f'Saved run numbers  → {numbers_path}')
 
 
 def main():
-    if ORACLE_TRIAL_RESIDUAL and (STIMULUS_TYPE or '').lower() != 'oracle':
-        raise SystemExit("ORACLE_TRIAL_RESIDUAL=True requires STIMULUS_TYPE='oracle'")
-
-    print(f'stimulus={STIMULUS_TYPE!r}  trial_residual={ORACLE_TRIAL_RESIDUAL}  '
-          f'match_compactness={MATCH_COMPACTNESS}  match_indegree={MATCH_INDEGREE}')
+    print(f'stimulus=oracle  trial_residual={ORACLE_TRIAL_RESIDUAL}')
     print(f'methods: {METHODS} = {len(METHODS)} runs')
 
     shared = load_shared()

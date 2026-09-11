@@ -9,24 +9,18 @@ whichever you prefer and run only that one.
 
 What it downloads
 
-    https://zenodo.org/records/21104426  —  data.zip, 1.4 GB compressed, 4.4 GB unpacked
-    DOI 10.5281/zenodo.21104425 (all versions) / 10.5281/zenodo.21104426 (this one)
+    https://zenodo.org/records/22714532  —  data.zip, 2.0 GB compressed, 4.9 GB unpacked
+    DOI 10.5281/zenodo.21104425 (all versions) / 10.5281/zenodo.22714532 (this one)
 
 and unpacks it into `data/` next to this script:
 
-    data/raw_tables/               two of the seven CAVE tables — the column's manual
-                                   cell types and the proofreading status, which are the
-                                   two the figures read
-    data/micro_column_network/     the 1,351-cell column: neurons, skeletons, meshes,
-                                   synapse and spine tables, connectivity matrix,
-                                   subnetworks
+    data/raw_tables/               all seven CAVE tables, among them
+                                   `coregistration_manual_v4.csv`, which
+                                   scripts/extract_calcium_data_via_docker.ipynb needs
+    data/micro_column_network/     the 1,351-cell column: neurons, skeletons, all ten
+                                   meshes, synapse and spine tables, connectivity
+                                   matrix, subnetworks
     data/all_axon_pr_network/      the proofread-axon network — figure S3
-
-The archive also carries the pre-rendered dendrite images and EM cut-outs behind figures
-1, 2 and S1, under `data/figures/spine_project/`. Nothing reads them any more: neither
-download route can rebuild those images, so they ship in the repository itself, in
-`images/`, and that is where the notebooks look. The extracted copy is redundant and can
-be deleted.
 
 What it does NOT download
 
@@ -36,13 +30,6 @@ What it does NOT download
                                    them — build them with
                                    scripts/extract_calcium_data_via_docker.ipynb, then
                                    run scripts/ensemble_run.py. See the README.
-
-Two things live only on the CAVE route. The first is the other five raw tables — among
-them `coregistration_manual_v4.csv`, which scripts/extract_calcium_data_via_docker.ipynb
-needs; `python download_data_cave.py --steps raw` fetches all seven in a couple of
-minutes and needs a CAVE account. The second: the archive carries six of the ten cell
-meshes. The four it lacks are four of figure 7's six cells, and that notebook ships set
-to draw its cells as skeletons, so nothing breaks without them.
 
 Usage
 
@@ -68,7 +55,10 @@ for _stream in (sys.stdout, sys.stderr):
 
 # The data deposit, not the code archive: 10.5281/zenodo.21104860 in the README badge is
 # the citable snapshot of *this repository*, a different record.
-ZENODO_URL = 'https://zenodo.org/records/21104426/files/data.zip?download=1'
+#
+# Pinned to the v2 record rather than the concept DOI on purpose — the concept id does
+# not serve files, only version record ids do. Bump this when publishing a new version.
+ZENODO_URL = 'https://zenodo.org/records/22714532/files/data.zip?download=1'
 
 # Everything resolves against the script's own folder, so the script works from any cwd.
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))

@@ -24,15 +24,10 @@ Two things the loader handles once, so consumers never have to (see ``activity.m
    ``frame_times[k] + ms_delay_u / 1000`` - *not* ``k / fps``, which is additionally
    wrong by up to 2.5 s over a 40k-frame scan.
 
-     'interp' (default) - resample each unit's traces onto the scan's shared
-                          ``frame_times`` grid, so column ``t`` of every unit really is
-                          the same instant. This is what the figures use.
-     None               - leave traces untouched, expose the unit's true time axis as
-                          ``payload['time']``.
-     'shift'            - whole-frame roll, a cruder alternative to 'interp'.
-
-   Either way ``payload['frame_times']`` is the real per-scan clock and
-   ``payload['time']`` the correct time axis. Never compute ``np.arange(nframes) / fps``.
+   The loader resamples every unit's traces onto the scan's shared ``frame_times``
+   grid, so column ``t`` of every unit really is the same instant.
+   ``payload['frame_times']`` is the real per-scan clock and ``payload['time']`` the
+   correct time axis. Never compute ``np.arange(nframes) / fps``.
 """
 
 from typing import Dict, Tuple, Iterable
@@ -54,7 +49,6 @@ UNIT_META = ('fps', 'nframes', 'nfields', 'oracle_score', 'ms_delay', 'field',
              'mask_id', 'mask_type', 'um_x', 'um_y', 'um_z', 'px_x', 'px_y',
              'field_x', 'field_y', 'field_z', 'pt_root_id_v1507')
 
-_ALIGN_MODES = (None, 'interp', 'shift')
 
 
 # ── the two files that are not in the Zenodo snapshot ────────────────────────
@@ -103,8 +97,7 @@ def require_activity_h5(*paths, needed_by=None):
         '    3. run that notebook top to bottom',
         '    4. copy the two .h5 files it writes back into data/activity/',
         '',
-        "The notebook's first cell has the step-by-step; see also \"The activity",
-        'half\" in the README.',
+        "The notebook's first cell has the step-by-step; see also the README.",
         '',
     ]
     raise FileNotFoundError('\n'.join(lines))
@@ -142,8 +135,7 @@ def load_scan_frame_times(h5_path: str) -> Dict[Tuple[int, int], Dict[str, np.nd
     return out
 
 
-def align_trace(trace: np.ndarray, frame_times: np.ndarray, ms_delay: float,
-                fps: float, method: str = 'interp') -> np.ndarray:
+def align_trace(trace: np.ndarray, frame_times: np.ndarray, ms_delay: float) -> np.ndarray:
     """Resample one unit's trace from its own clock onto the scan's `frame_times`.
 
     The unit's sample `k` was taken at `frame_times[k] + ms_delay/1000`, so the
@@ -155,20 +147,12 @@ def align_trace(trace: np.ndarray, frame_times: np.ndarray, ms_delay: float,
     Edges are clamped to the first/last sample, so length is preserved.
     """
     d = float(ms_delay) / 1000.0
-    if d == 0.0 or method is None:
+    if d == 0.0:
         return trace
-    if method == 'interp':
-        return np.interp(frame_times, frame_times + d, trace)
-    if method == 'shift':
-        n = int(round(d * float(fps)))
-        if n <= 0:
-            return trace
-        n = min(n, len(trace))
-        return np.concatenate([np.full(n, trace[0], dtype=trace.dtype), trace[:-n]])
-    raise ValueError(f"align method must be one of {_ALIGN_MODES}, got {method!r}")
+    return np.interp(frame_times, frame_times + d, trace)
 
 
-def load_ex_functional_data(h5_path: str, nucleus_ids: Iterable, align: str | None = 'interp',
+def load_ex_functional_data(h5_path: str, nucleus_ids: Iterable,
                             datasets: Iterable[str] | None = None, progress: bool = True,
                             ) -> Dict[str, Dict[Tuple[int, int, int], Dict[str, np.ndarray]]]:
     """Load functional data from the v2 calcium H5, keyed by **nucleus_id**.
@@ -181,7 +165,6 @@ def load_ex_functional_data(h5_path: str, nucleus_ids: Iterable, align: str | No
                   than silently returning an empty dict, which is how the v1
                   keying bug hid for so long. To load by root_id use
                   `load_ex_functional_data_by_root_id`.
-    align       : 'interp' | 'shift' | None — ms_delay handling, see module docstring
     datasets    : subset of UNIT_TRACES + SCAN_TRACES to load (default: all). Use
                   e.g. `('spike_trace',)` to halve the memory when the calcium
                   trace isn't needed.
@@ -191,13 +174,8 @@ def load_ex_functional_data(h5_path: str, nucleus_ids: Iterable, align: str | No
     `{str(nucleus_id): {(session, scan_idx, unit_id): payload}}` where payload has
     the traces, every scalar in UNIT_META that the file carries, plus:
         frame_times — (nframes,) real per-scan clock, shared read-only reference
-        time        — the time axis *for this payload's traces*: `frame_times`
-                      when aligned, `frame_times + ms_delay/1000` when align=None
-        align       — the mode used, so consumers can assert on it
+        time        — the time axis for this payload's traces, i.e. `frame_times`
     """
-    if align not in _ALIGN_MODES:
-        raise ValueError(f"align must be one of {_ALIGN_MODES}, got {align!r}")
-
     want = set(UNIT_TRACES) | set(SCAN_TRACES) if datasets is None else set(datasets)
     ids = [str(int(n)) for n in nucleus_ids]
     # root_ids are ~8.6e17, nucleus_ids ~1e5-1e6. A root_id here means a caller
@@ -245,7 +223,6 @@ def load_ex_functional_data(h5_path: str, nucleus_ids: Iterable, align: str | No
                         v = v.decode('utf-8', 'replace')
                     payload[name] = v if isinstance(v, str) else v.item()
 
-                fps      = float(payload['fps'])
                 ms_delay = float(payload.get('ms_delay', 0.0))
 
                 scan_meta = scans.get((session, scan_idx))
@@ -278,15 +255,13 @@ def load_ex_functional_data(h5_path: str, nucleus_ids: Iterable, align: str | No
 
                 for name, tr in raw.items():
                     tr = tr[:len(clock)]
-                    if name in UNIT_TRACES and align is not None:
-                        tr = align_trace(tr, clock, ms_delay, fps, method=align)
+                    if name in UNIT_TRACES:
+                        tr = align_trace(tr, clock, ms_delay)
                     payload[name] = tr
 
                 payload['frame_times'] = clock
                 payload['ndepths'] = scan_meta['ndepths']
-                payload['align'] = align
-                payload['time'] = (clock if align is not None
-                                   else clock + ms_delay / 1000.0)
+                payload['time'] = clock
                 unit_dict[(session, scan_idx, unit_id)] = payload
 
             if unit_dict:
@@ -316,8 +291,7 @@ def build_nucleus_to_root_id(neurons_df: pd.DataFrame, root_ids: Iterable | None
 
 
 def load_ex_functional_data_by_root_id(h5_path: str, neurons_df: pd.DataFrame,
-                                       root_ids: Iterable | None = None,
-                                       align: str | None = 'interp', **kwargs
+                                       root_ids: Iterable | None = None, **kwargs
                                        ) -> Dict[str, Dict[Tuple[int, int, int], Dict[str, np.ndarray]]]:
     """`load_ex_functional_data` re-keyed to current (v1718) root_ids as `str`.
 
@@ -333,7 +307,7 @@ def load_ex_functional_data_by_root_id(h5_path: str, neurons_df: pd.DataFrame,
     overwriting, because the two nuclei are genuinely different cells.
     """
     nuc_to_root = build_nucleus_to_root_id(neurons_df, root_ids)
-    by_nucleus = load_ex_functional_data(h5_path, nuc_to_root.keys(), align=align, **kwargs)
+    by_nucleus = load_ex_functional_data(h5_path, nuc_to_root.keys(), **kwargs)
 
     out: Dict[str, Dict[Tuple[int, int, int], Dict[str, np.ndarray]]] = {}
     collisions = []
@@ -349,7 +323,7 @@ def load_ex_functional_data_by_root_id(h5_path: str, neurons_df: pd.DataFrame,
               f'map to >1 nucleus_id (merge-error segments); their units were pooled: '
               f'{sorted(set(collisions))[:5]}')
     print(f'Functional data: {len(out)} neurons '
-          f'({sum(len(u) for u in out.values())} units, align={align!r})')
+          f'({sum(len(u) for u in out.values())} units)')
     return out
 def load_scan_trials_df(h5_stim_path: str, session, scan_idx):
     with h5py.File(h5_stim_path, 'r') as f:
@@ -396,10 +370,9 @@ def select_scan_matrix(ex_func_data, session, scan_idx, trace_key='spike_trace')
     Returns (root_ids: int64 (N,), traces: float32 (N, T), fps: float).
 
     The video paints all N neurons at a single cursor position, so column `t` has
-    to be one instant across neurons — which requires ms_delay-aligned traces
-    (`activity_utils` `align='interp'`, the default). Raw traces are up to one
-    frame apart between imaging depths and would make the animation show the
-    deeper fields lighting up late.
+    to be one instant across neurons — which is what the loader's ms_delay
+    interpolation guarantees. Raw traces are up to one frame apart between imaging
+    depths and would make the animation show the deeper fields lighting up late.
     """
     per_neuron = []
     for nid_str, units in ex_func_data.items():
@@ -409,10 +382,6 @@ def select_scan_matrix(ex_func_data, session, scan_idx, trace_key='spike_trace')
             if trace_key not in payload:
                 raise KeyError(f"trace_key {trace_key!r} missing on unit "
                                f"({s}, {sc}) of neuron {nid_str}")
-            if payload.get('align') is None:
-                raise ValueError(
-                    f"select_scan_matrix requires ms_delay-aligned traces: neuron "
-                    f"{nid_str} was loaded with align=None. Reload with align='interp'.")
             per_neuron.append((int(nid_str), payload))
             break  # one unit per neuron per (session, scan_idx)
 

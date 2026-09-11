@@ -1,6 +1,4 @@
 from matplotlib.patches import Polygon as MplPolygon
-from matplotlib.collections import PatchCollection
-from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import matplotlib.pyplot as plt
 import numpy as np
@@ -36,17 +34,9 @@ def plot_clf_type_triple_binned(x_axis, x_label, df,
     else:
         y_list=['num_of_ex_incoming_synapses', 'num_of_inh_incoming_synapses']
     
-    # max_density = df['ds_incoming_synapses_density'].max()
-    if main_x_feature == 'spine_density':
-        custom_bins = [0.0, 0.001, 0.005, 0.01, 0.02, 0.04, 0.08]
-    elif main_x_feature == 'ds_spine_density':
-        custom_bins = [0.125, 0.375, 0.625, 0.875, 1.125, 1.375]
-        custom_bins_centers = [0.25, 0.5, 0.75, 1.0, 1.25]
-    elif main_x_feature == 'number_syn_on_spines':
-        custom_bins = [0, 25, 50, 75, 100, 125, 150, 175, 200]
+    custom_bins = [0.125, 0.375, 0.625, 0.875, 1.125, 1.375]
+    custom_bins_centers = [0.25, 0.5, 0.75, 1.0, 1.25]
 
-
-    print(custom_bins)
     binned_mul_plot(
         markers=['o', ','],
         ls=['-', ':'],
@@ -114,14 +104,9 @@ def plot_clf_type_triple_binned(x_axis, x_label, df,
     ax_list[2].set_xlabel(x_label)
 
 
-    if main_x_feature == 'number_syn_on_spines':
-        for ax in ax_list:
-            ax.set_xticks(custom_bins)
-    
-    if main_x_feature == 'ds_spine_density':
-        for ax in ax_list:
-            ax.set_xticks(custom_bins_centers)
-            ax.set_xticklabels([str(b) for b in custom_bins_centers])
+    for ax in ax_list:
+        ax.set_xticks(custom_bins_centers)
+        ax.set_xticklabels([str(b) for b in custom_bins_centers])
     if created_fig:
         return fig, ax_list
 
@@ -320,8 +305,6 @@ def plot_3d_box(ax_top, layer_fontsize=10):
                     linestyle='--', zorder=3)
 
         # --- label at vertical midpoint of this layer ---
-        # next boundary is either the next layer's depth or the bottom of the panel
-        next_depth = depths_items[i + 1][1] if i + 1 < len(depths_items) else y_data_bottom
         mid_depth  = (prev_depth + depth_um) / 2
         y_mid_ax   = 1.0 - mid_depth / y_data_bottom
 

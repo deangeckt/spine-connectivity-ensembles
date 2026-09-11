@@ -1,6 +1,6 @@
 # Dendritic spines implement specific connectivity and support neuronal ensembles in cortical circuits
 
-[![DOI](https://img.shields.io/badge/DOI-10.64898%2F2026.06.07.730704-blue.svg)](https://www.biorxiv.org/content/10.64898/2026.06.07.730704v2) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21104426.svg)](https://zenodo.org/records/21104426)
+[![DOI](https://img.shields.io/badge/DOI-10.64898%2F2026.06.07.730704-blue.svg)](https://www.biorxiv.org/content/10.64898/2026.06.07.730704v2) [![Code DOI](https://img.shields.io/badge/code-10.5281%2Fzenodo.21104860-blue.svg)](https://doi.org/10.5281/zenodo.21104860) [![Data DOI](https://img.shields.io/badge/data-10.5281%2Fzenodo.21104425-blue.svg)](https://doi.org/10.5281/zenodo.21104425)
 
 This repository provides the official codebase, data analysis pipelines, and supplementary
 notes for the preprint **[Dendritic spines implement specific connectivity and support
@@ -233,11 +233,6 @@ than an unreadable error deep in the run.
 `filtered_mapping` = `{matrix_index: root_id}`. Always rebuild after any neuron filtering.
 
 
-### Null models of figure 4
-Generated in memory with
-`generate_shuffles(bin_mat, mapping, neuron_clf_type, shuffle_mode, amount)`. No disk
-cache. `shuffle_mode` is `'cfg'` (configuration model).
-
 ---
 
 ## Citation
@@ -254,3 +249,12 @@ If you use this code or data in your research, please cite our preprint:
 	note = {Preprint, version 2}
 }
 ```
+
+---
+
+## Operating system
+
+Everything here was developed and run on **Windows 11** with Python 3.12. Nothing in the
+code is platform-specific — paths are built with `os.path`, and every pinned dependency
+publishes Linux and macOS wheels — so Linux and macOS should work too, but we have not
+tested them.

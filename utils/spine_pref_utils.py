@@ -51,7 +51,6 @@ def plot_spine_along_axon(ax,
                           show_legend=False,
                           cross_dist_textsize=10,
                           show_cross_distance=True,
-                          aver_by='micro',
                           num_single_bins=10,
                           num_pop_bins=100,
                           max_distance=1200,
@@ -60,12 +59,8 @@ def plot_spine_along_axon(ax,
     """
     Plot spine fraction vs. distance for a population average and individual axons.
 
-    Parameters
-    ----------
-    aver_by : str, 'micro' or 'macro'
-        'micro': Pooled average (synapse-weighted).
-        'macro': Mean of means (neuron-weighted).
-    Error bars are the standard error of the mean.
+    The population line is the mean of per-axon spine fractions (neuron-weighted),
+    with the standard error of the mean as its error band.
     """
 
     dist_col = 'dist_to_pre_syn_soma'
@@ -84,57 +79,40 @@ def plot_spine_along_axon(ax,
     # ==========================================
     # STEP A: POPULATION AVERAGE
     # ==========================================
-    if aver_by == 'micro':
-        counts_all_pop, _ = np.histogram(outgoing_syn[dist_col], bins=pop_bins)
-        spines_only_pop = outgoing_syn[outgoing_syn.tag == 'spine']
-        counts_spines_pop, _ = np.histogram(spines_only_pop[dist_col], bins=pop_bins)
+    unique_ids = outgoing_syn['pre_id'].unique()
+    all_fractions = []
 
-        valid_bins_pop = counts_all_pop > 0
-        spine_fraction_pop = np.full(len(counts_all_pop), np.nan)
+    for node_id in unique_ids:
+        axon_data = outgoing_syn[outgoing_syn['pre_id'] == node_id]
+        c_all, _ = np.histogram(axon_data[dist_col], bins=pop_bins)
+        c_spines, _ = np.histogram(axon_data[axon_data.tag == 'spine'][dist_col], bins=pop_bins)
         
-        # Only divide where there are actually synapses
-        spine_fraction_pop[valid_bins_pop] = counts_spines_pop[valid_bins_pop] / counts_all_pop[valid_bins_pop]
-        
-        sd_pop = np.sqrt(spine_fraction_pop * (1 - spine_fraction_pop))
-        
-        err_pop = sd_pop / np.sqrt(counts_all_pop)
+        frac = np.full(len(c_all), np.nan)
+        valid_mask = c_all > 0
+        frac[valid_mask] = c_spines[valid_mask] / c_all[valid_mask]
+        all_fractions.append(frac)
 
-    elif aver_by == 'macro':
-        unique_ids = outgoing_syn['pre_id'].unique()
-        all_fractions = []
-
-        for node_id in unique_ids:
-            axon_data = outgoing_syn[outgoing_syn['pre_id'] == node_id]
-            c_all, _ = np.histogram(axon_data[dist_col], bins=pop_bins)
-            c_spines, _ = np.histogram(axon_data[axon_data.tag == 'spine'][dist_col], bins=pop_bins)
-            
-            frac = np.full(len(c_all), np.nan)
-            valid_mask = c_all > 0
-            frac[valid_mask] = c_spines[valid_mask] / c_all[valid_mask]
-            all_fractions.append(frac)
-
-        all_fractions = np.array(all_fractions)
+    all_fractions = np.array(all_fractions)
+    
+    # First, find which columns (bins) have at least one valid number
+    valid_bins_pop = np.sum(~np.isnan(all_fractions), axis=0) > 0
+    
+    spine_fraction_pop = np.full(all_fractions.shape[1], np.nan)
+    sd_pop = np.full(all_fractions.shape[1], np.nan)
+    
+    # Only calculate mean/std on columns that are NOT entirely NaN
+    if np.any(valid_bins_pop):
+        spine_fraction_pop[valid_bins_pop] = np.nanmean(all_fractions[:, valid_bins_pop], axis=0)
+        sd_pop[valid_bins_pop] = np.nanstd(all_fractions[:, valid_bins_pop], axis=0)
         
-        # First, find which columns (bins) have at least one valid number
-        valid_bins_pop = np.sum(~np.isnan(all_fractions), axis=0) > 0
-        
-        spine_fraction_pop = np.full(all_fractions.shape[1], np.nan)
-        sd_pop = np.full(all_fractions.shape[1], np.nan)
-        
-        # Only calculate mean/std on columns that are NOT entirely NaN
-        if np.any(valid_bins_pop):
-            spine_fraction_pop[valid_bins_pop] = np.nanmean(all_fractions[:, valid_bins_pop], axis=0)
-            sd_pop[valid_bins_pop] = np.nanstd(all_fractions[:, valid_bins_pop], axis=0)
-            
-        n_neurons_per_bin = np.sum(~np.isnan(all_fractions), axis=0)
-        # Avoid divide by zero for err_pop
-        err_pop = np.zeros_like(sd_pop)
-        err_pop[valid_bins_pop] = sd_pop[valid_bins_pop] / np.sqrt(n_neurons_per_bin[valid_bins_pop])
-        
+    n_neurons_per_bin = np.sum(~np.isnan(all_fractions), axis=0)
+    # Avoid divide by zero for err_pop
+    err_pop = np.zeros_like(sd_pop)
+    err_pop[valid_bins_pop] = sd_pop[valid_bins_pop] / np.sqrt(n_neurons_per_bin[valid_bins_pop])
 
     # --- Plotting the Population Line ---
     ax.plot(pop_bin_centers[valid_bins_pop], spine_fraction_pop[valid_bins_pop],
-            color=pop_color, lw=2.0, label=f'Pop. Avg ({aver_by}, SEM)', zorder=5)
+            color=pop_color, lw=2.0, label='Pop. Avg (macro, SEM)', zorder=5)
     
     ax.fill_between(pop_bin_centers[valid_bins_pop],
                     spine_fraction_pop[valid_bins_pop] - err_pop[valid_bins_pop],

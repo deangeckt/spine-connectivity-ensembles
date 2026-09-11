@@ -41,15 +41,9 @@ nulls for connection probability and shared input, which depend on *which* contr
 the rejection sampler happens to find. Observed values are identical either way — only
 the nulls move.
 
-That movement used to be large enough to matter. The sampler's accept rate falls to
-~1e-5 on the tightest ensembles, and under the old 500_000-attempt budget nine of the 52
-ensembles ended up with fewer than 100 control groups apiece — while carrying a third of
-figure 6E's synapses. Two honest runs of the same method put that panel's p-value at
-0.0073 and 0.0121, either side of a significance star. The sampler now tests candidates
-in numpy batches (`_draw_candidate_groups`, ~100x the old throughput, same accept/reject
-rules), which affords a budget large enough to fill those pools, and the bootstraps take
-their replicate count from `N_BOOTSTRAP` rather than reusing `n_controls` — 1000
-replicates left p jittering over 0.006-0.022 across bootstrap seeds. See the README.
+The sampler's accept rate falls to ~1e-5 on the tightest ensembles, so `MAX_ATTEMPTS`
+and `N_BOOTSTRAP` in `scripts/ensemble_run.py` are set large enough that those nulls are
+stable between runs.
 """
 
 import warnings
@@ -120,7 +114,6 @@ def detect_ensembles_lds(
     trace_type: str = 'spike',
     membership_threshold_std: float = 2.0,
     n_surrogates: int = 1000,
-    k_from: str = 'auto',
     max_member_frac: float = 1.0,
     random_state: int = 0,
 ) -> dict:
@@ -134,7 +127,7 @@ def detect_ensembles_lds(
     --------
     1.  Z-score each neuron over time → Zn (N, T).
     2.  Correlation matrix C = Zn·Znᵀ/T, eigendecomposed.
-    3.  Count the eigenvalues that exceed a noise ceiling → K (see `k_from`).
+    3.  Count the eigenvalues that exceed the surrogate noise ceiling λ_cs → K.
     4.  Project onto the top-K eigenvectors and run FastICA inside that subspace.
         PCA alone would force the components orthogonal, which is a mathematical
         constraint with no biological basis (real assemblies overlap); ICA finds
@@ -148,8 +141,9 @@ def detect_ensembles_lds(
 
     Corrections vs. the published pipeline
     --------------------------------------
-    `k_from` (default 'cs') is the one deviation, and it is a correction to a
-    real failure mode rather than a preference:
+    Taking K from the circular-shift ceiling λ_cs rather than the Marchenko-Pastur
+    edge λ_MP is the one deviation, and it is a correction to a real failure mode
+    rather than a preference:
 
     The published ceiling is the Marchenko-Pastur upper edge
     λ_MP = (1 + √(N/T))², which is the largest eigenvalue attainable when the N
@@ -192,12 +186,7 @@ def detect_ensembles_lds(
     membership_threshold_std : θ; neuron i joins ensemble k when v_k[i] > θ·std(v_k)
     n_surrogates             : circular-shift surrogates for λ_cs. 1000 is ample —
                                λ_cs is a 95th percentile, not a tail quantile, and
-                               a surrogate costs ~3 ms at (N=56, T=32k). 0 skips
-                               the surrogates entirely and forces `k_from='mp'`.
-    k_from                   : 'auto' (default) → 'cs' when surrogates were run,
-                               'mp' otherwise. 'cs' → K = #{λ > λ_cs}. 'mp' → the
-                               published K = #{λ > λ_MP}. Both ceilings are always
-                               reported in population_meta regardless.
+                               a surrogate costs ~3 ms at (N=56, T=32k).
     max_member_frac          : post-detection size cutoff, same backstop as in
                                `detect_ensembles_ecker`. 1.0 (default) = off. When
                                set to a fraction f in (0, 1), any component whose
@@ -212,22 +201,19 @@ def detect_ensembles_lds(
     dict with keys
         ensembles_df      — long-format DataFrame [k, root_id, weight, is_member]
         ensemble_meta_df  — one row per ensemble: k, n_members, weight_mean/std/max
-        population_meta   — K, K_mp, K_cs, k_from, lambda_max_mp, lambda_cs,
+        population_meta   — K, K_mp, K_cs, lambda_max_mp, lambda_cs,
                             lambda_gap, N, T, trace_type
         V                 — (N, K) L2-normalised weight matrix  (float32)
         M                 — (N, K) membership matrix (int8, one-sided)
         S                 — (T, K) per-frame activation strength (float32)
 
-    `population_meta['K']` is the K actually used to fit, so downstream code needs
-    no post-hoc trimming; `K_cs` equals `K` whenever k_from='cs'.
+    `population_meta['K']` is the K actually used to fit — it equals `K_cs` — so
+    downstream code needs no post-hoc trimming.
     """
     traces = np.asarray(traces, dtype=np.float32)
     N, T = traces.shape
     if len(root_ids) != N:
         raise ValueError(f"len(root_ids)={len(root_ids)} != N={N}")
-    if k_from not in ('auto', 'mp', 'cs'):
-        raise ValueError(f"k_from must be 'auto', 'mp' or 'cs', got {k_from!r}")
-
     # z-score per neuron
     mu    = traces.mean(axis=1, keepdims=True)
     sigma = traces.std(axis=1,  keepdims=True) + 1e-8
@@ -241,34 +227,24 @@ def detect_ensembles_lds(
     lambda_gap    = float(eigenvalues[-1] / lambda_max_mp)
 
     # ── circular-shift surrogate ceiling λ_cs — BEFORE choosing K (see docstring)
-    lambda_cs, K_cs = np.nan, None
-    if n_surrogates > 0:
-        rng   = np.random.default_rng(random_state)
-        maxes = np.empty(n_surrogates)
-        Zs    = np.empty_like(Zn)
-        for s in range(n_surrogates):
-            # per-row np.roll, not the vectorised `_shift_rows`: at this shape the
-            # latter's (N, T) int64 index array costs more than N contiguous rolls
-            # (~12 ms vs ~2.4 ms at N=56, T=32k), and this loop runs n_surrogates times
-            for i, sh in enumerate(rng.integers(1, max(2, T), size=N)):
-                Zs[i] = np.roll(Zn[i], int(sh))
-            maxes[s] = np.linalg.eigvalsh((Zs @ Zs.T) / T).max()
-        lambda_cs = float(np.percentile(maxes, 95))
-        K_cs      = int(np.sum(eigenvalues > lambda_cs))
-
-    _k_from = k_from
-    if _k_from == 'auto':
-        _k_from = 'cs' if n_surrogates > 0 else 'mp'
-    if _k_from == 'cs' and n_surrogates <= 0:
-        raise ValueError("k_from='cs' requires n_surrogates > 0 to estimate λ_cs")
-    K = K_cs if _k_from == 'cs' else K_mp
+    rng   = np.random.default_rng(random_state)
+    maxes = np.empty(n_surrogates)
+    Zs    = np.empty_like(Zn)
+    for s in range(n_surrogates):
+        # per-row np.roll, not the vectorised `_shift_rows`: at this shape the
+        # latter's (N, T) int64 index array costs more than N contiguous rolls
+        # (~12 ms vs ~2.4 ms at N=56, T=32k), and this loop runs n_surrogates times
+        for i, sh in enumerate(rng.integers(1, max(2, T), size=N)):
+            Zs[i] = np.roll(Zn[i], int(sh))
+        maxes[s] = np.linalg.eigvalsh((Zs @ Zs.T) / T).max()
+    lambda_cs = float(np.percentile(maxes, 95))
+    K = K_cs  = int(np.sum(eigenvalues > lambda_cs))
 
     print(f"[detect_ensembles_lds] N={N}  T={T}  q={T/N:.2f}  "
           f"λ_MP={lambda_max_mp:.4f} (K_mp={K_mp})  "
-          + (f"λ_cs={lambda_cs:.4f} (K_cs={K_cs})  " if n_surrogates > 0
-             else "λ_cs=skipped  ")
-          + f"→ K={K} from '{_k_from}'  λ_gap={lambda_gap:.3f}")
-    if n_surrogates > 0 and K_mp > 0:
+          f"λ_cs={lambda_cs:.4f} (K_cs={K_cs})  "
+          f"→ K={K}  λ_gap={lambda_gap:.3f}")
+    if K_mp > 0:
         print(f"[detect_ensembles_lds] {K_mp - K_cs}/{K_mp} MP-significant components "
               f"are explained by temporal autocorrelation alone "
               f"({100 * (K_mp - K_cs) / K_mp:.0f}% of K_mp)")
@@ -351,10 +327,9 @@ def detect_ensembles_lds(
         'K':             K,
         'K_mp':          K_mp,
         'K_cs':          K_cs,
-        'k_from':        _k_from,
         'n_surrogates':  int(n_surrogates),
         'lambda_max_mp': float(lambda_max_mp),
-        'lambda_cs':     float(lambda_cs) if not np.isnan(lambda_cs) else None,
+        'lambda_cs':     float(lambda_cs),
         'lambda_gap':    float(lambda_gap),
         'N':             N,
         'T':             T,
@@ -425,11 +400,7 @@ def detect_ensembles_ecker(
     n_shuffles_bin: int = 100,
     n_shuffles_member: int = 10000,
     bin_sig_percentile: float = 95.0,
-    bin_sig_n_std: float | bool = False,
-    normalize_neurons: str | None = 'std',
     member_alpha: float = 0.05,
-    member_correction: str | None = 'fdr_bh',
-    regress_out_population: bool = False,
     max_member_frac: float = 1.0,
     random_state: int = 0,
 ) -> dict:
@@ -499,10 +470,9 @@ def detect_ensembles_ecker(
 
     Deviations from the literal published algorithm
     -----------------------------------------------
-    Three problems surface when the algorithm as published is run on this data. Each
-    fix sits behind a parameter that can be switched off.
+    Three problems surface when the algorithm as published is run on this data.
 
-    (a) `normalize_neurons='std'` — step 2 thresholds `X.sum(axis=0)`, a raw sum
+    (a) Per-neuron SD normalisation — step 2 thresholds `X.sum(axis=0)`, a raw sum
         across neurons. Deconvolved calcium amplitudes are in *arbitrary
         per-neuron units* (a bright ROI yields systematically larger values than
         a dim one), so a handful of loud neurons decided which bins counted as
@@ -510,12 +480,12 @@ def detect_ensembles_ecker(
         step 3. Each neuron's trace is now divided by its own SD before both
         steps, which equalises contributions while preserving non-negativity and
         the "sum = population activity" interpretation. Centering is deliberately
-        *not* applied (`'zscore'` is available but changes the sparse non-negative
-        structure the method assumes). Pearson correlations in steps 4-5 are
-        scale-invariant, so this only affects *which* bins and clusters are found,
-        never the membership correlations themselves. `None` restores raw sums.
+        *not* applied: it would change the sparse non-negative structure the method
+        assumes. Pearson correlations in steps 4-5 are scale-invariant, so this only
+        affects *which* bins and clusters are found, never the membership
+        correlations themselves.
 
-    (b) `member_correction='fdr_bh'` + p-values from exceedance counts —
+    (b) Benjamini-Hochberg membership + p-values from exceedance counts —
         membership significance was a `np.percentile` of the null correlations,
         with the multiplicity correction computed by the *caller* as α/N. Two
         problems: the number of tests is N·K_candidate, not N (at N=56, K=6 that
@@ -525,20 +495,16 @@ def detect_ensembles_ecker(
         p-value p = (1 + #{null ≥ observed}) / (n_shuffles + 1), with K_candidate
         known at test time.
 
-        The correction defaults to Benjamini-Hochberg rather than Bonferroni.
-        Bonferroni controls the family-wise error rate — the probability of *any*
+        The correction is Benjamini-Hochberg rather than Bonferroni. Bonferroni
+        controls the family-wise error rate — the probability of *any*
         false member anywhere — which is the wrong target when many true members
         are expected, and it scales badly: at K_candidate=20 the per-test
         threshold is α/1120 = 4.5e-5, so the empirical p-value floor 1/(n+1)
         cannot even reach it without >200k shuffles. BH controls the false
         discovery rate (the fraction of *called* members that are spurious),
         which is what a downstream group statistic actually cares about, and its
-        rank-i threshold α·i/m stays well clear of the p-value floor.
-        `member_correction='bonferroni'` and `None` remain available, and the
-        function warns whenever the shuffle budget leaves the calls
-        resolution-limited. Raise `n_shuffles_member`, or use a less conservative
-        `member_correction`, to restore
-        the old percentile-threshold behaviour.
+        rank-i threshold α·i/m stays well clear of the p-value floor. The function
+        warns whenever the shuffle budget leaves the calls resolution-limited.
 
     (c) `k_range` default (2, 20) instead of (5, 20) — Davies-Bouldin only ranks
         partitions relative to each other; it never reports "there are no
@@ -579,54 +545,17 @@ def detect_ensembles_ecker(
                              membership test. Default 10000; the paper used 1000,
                              which cannot resolve a Bonferroni-corrected α — see
                              correction (b). Costs ~3.3 ms each at N=56, T=32k.
-    normalize_neurons      : 'std' (default) → divide each neuron by its own SD
-                             before the population sum and the cosine similarities;
-                             'zscore' → also center; None → published raw sums.
-                             See correction (a).
-    member_alpha           : α for the membership test (default 0.05) — the FDR
-                             level q under 'fdr_bh', the family-wise rate otherwise
-    member_correction      : 'fdr_bh' (default) → Benjamini-Hochberg over the
-                             N · K_candidate tests; 'bonferroni' → per-test
-                             threshold member_alpha / (N · K_candidate), correct but
-                             very conservative and often unreachable at large
-                             K_candidate; None → uncorrected member_alpha.
+    member_alpha           : α for the membership test — the Benjamini-Hochberg FDR
+                             level q (default 0.05)
     bin_sig_percentile     : percentile of shuffled std defining the bin threshold
-    bin_sig_n_std          : OFF by default (False) → the bin threshold stays the
-                             published `mean + p{bin_sig_percentile}(shuffled SD)`.
-                             When set to a number m, the threshold instead becomes
-                             the stricter `mean + m · (mean shuffled SD)`, i.e. "m
-                             null SDs above the population-mean activity". The
-                             percentile default is ~1 SD and is permissive — with
-                             calcium data it can flag >10% of bins, which lets one
-                             population-wide cluster absorb most of the population;
-                             m≈2–3 cuts the significant-bin fraction so clusters are
-                             cleaner. Leaving it False preserves the exact prior
-                             behaviour, so this only ever triggers when a caller
-                             (e.g. the notebook) passes an explicit multiplier.
-    regress_out_population : NOT part of the published pipeline — an opt-in add-on.
-                             If True, each neuron's linear coupling to the
-                             population-mean trace is regressed out *only* at the
-                             membership-testing stage (steps 4-5), before computing
-                             both the per-neuron correlations and the pairwise
-                             correlation matrix used in the co-firing criterion.
-                             Bin-significance detection (step 2) still uses the raw
-                             traces, so *when* the population is active is unchanged
-                             — this only changes *who* gets credited for it. Useful
-                             when population_meta['whole_pop_mean_corr'] is
-                             non-negligible and/or ensembles come back covering most
-                             of the recorded population (symptom of shared,
-                             non-specific covariation — e.g. stimulus-locked drive
-                             — being mistaken for a co-firing assembly). Off by
-                             default to keep default behaviour faithful to the
-                             papers as literally described.
     max_member_frac        : post-detection size cutoff. 1.0 (default) = off. When
                              set to a fraction f in (0, 1), any assembly that
                              *passed* the co-firing criterion but whose membership
                              exceeds f·N is dropped as non-specific and does NOT
                              count towards K. This is the backstop for a genuine
-                             near-global co-activation mode — one that survives both
-                             regress_out_population and a stricter bin_sig_n_std yet
-                             still recruits most of the population. Such an assembly
+                             near-global co-activation mode — one that survives the
+                             co-firing criterion yet still recruits most of the
+                             population. Such an assembly
                              carries no targeting *specificity* and would otherwise
                              dominate any pooled member-vs-member statistic, so it is
                              excluded rather than reported. Off by default so faithful
@@ -658,29 +587,13 @@ def detect_ensembles_ecker(
     `if K_cs is not None` will simply no-op (K is already the final,
     significance-filtered count). Extra method-specific fields are also included
     (n_bins, bin_frames, n_sig_bins, sig_bin_frac, k_scanned, davies_bouldin_best,
-    davies_bouldin_curve, n_candidate_clusters, member_p_threshold,
-    normalize_neurons) — additive, so they won't break code that only reads the
-    keys above.
+    davies_bouldin_curve, n_candidate_clusters, member_p_threshold) — additive, so
+    they won't break code that only reads the keys above.
     """
     traces = np.asarray(traces, dtype=np.float32)
     N, T = traces.shape
     if len(root_ids) != N:
         raise ValueError(f"len(root_ids)={len(root_ids)} != N={N}")
-    if bin_sig_n_std is True:
-        # guard the footgun: True is truthy and would float to m=1.0 (≈ the permissive
-        # default), silently doing nothing. It's a SD multiplier, not an on/off toggle.
-        raise ValueError(
-            "bin_sig_n_std is a SD multiplier, not a toggle. Pass False (or None) to keep "
-            "the published percentile threshold, or a number like 2 or 3. Got True, which "
-            "would silently mean m=1.0 — almost certainly not what you intended.")
-    if normalize_neurons not in ('std', 'zscore', None):
-        raise ValueError(
-            f"normalize_neurons must be 'std', 'zscore' or None, got {normalize_neurons!r}")
-    if member_correction not in ('fdr_bh', 'bonferroni', None):
-        raise ValueError(
-            f"member_correction must be 'fdr_bh', 'bonferroni' or None, "
-            f"got {member_correction!r}")
-
     rng = np.random.default_rng(random_state)
     bin_frames = max(1, int(bin_frames))
 
@@ -699,16 +612,12 @@ def detect_ensembles_ecker(
             # yields the same schema as a full run and callers can read any key
             # without guarding (meta_extra overrides these)
             'n_bins': None, 'n_sig_bins': 0, 'sig_bin_frac': None,
-            'bin_sig_n_std': (False if bin_sig_n_std is False or bin_sig_n_std is None
-                              else float(bin_sig_n_std)),
-            'normalize_neurons': normalize_neurons,
             'k_scanned': list(k_range), 'davies_bouldin_best': None,
             'davies_bouldin_curve': {}, 'n_candidate_clusters': 0,
             'n_shuffles_member': int(n_shuffles_member),
-            'member_alpha': float(member_alpha), 'member_correction': member_correction,
+            'member_alpha': float(member_alpha),
             'member_p_threshold': None,
             'whole_pop_mean_corr': None,
-            'regress_out_population': regress_out_population,
             'max_member_frac': float(max_member_frac), 'n_size_dropped': 0,
             **meta_extra,
         }
@@ -726,14 +635,9 @@ def detect_ensembles_ecker(
     # 1b. per-neuron normalisation (correction (a) — see docstring). Deconvolved
     # amplitudes are in arbitrary per-neuron units, so without this the loudest
     # ROIs dominate both the population sum in step 2 and the cosine similarities
-    # in step 3. Dividing by each neuron's own SD equalises the contributions;
-    # centering is opt-in only, since it breaks the sparse non-negative structure.
-    if normalize_neurons is not None:
-        _sd = X.std(axis=1, keepdims=True) + 1e-12
-        if normalize_neurons == 'zscore':
-            X = (X - X.mean(axis=1, keepdims=True)) / _sd
-        else:
-            X = X / _sd
+    # in step 3. Dividing by each neuron's own SD equalises the contributions; it
+    # is not centered, which would break the sparse non-negative structure.
+    X = X / (X.std(axis=1, keepdims=True) + 1e-12)
 
     # 2. population-activity threshold via circular-shift shuffles ------------
     pop_activity = X.sum(axis=0)                                          # (n_bins,)
@@ -741,19 +645,13 @@ def detect_ensembles_ecker(
     for s in range(n_shuffles_bin):
         shifts = rng.integers(1, max(2, n_bins), size=N)
         shuffle_stds[s] = _shift_rows(X, shifts).sum(axis=0).std()
-    if bin_sig_n_std is False or bin_sig_n_std is None:
-        # published behaviour: mean + one representative null SD (~1 SD, permissive)
-        bin_thresh   = float(pop_activity.mean() + np.percentile(shuffle_stds, bin_sig_percentile))
-        _thresh_desc = f"mean+p{bin_sig_percentile:g}(SD_null)"
-    else:
-        # opt-in stricter threshold: m null SDs above the population-mean activity
-        bin_thresh   = float(pop_activity.mean() + float(bin_sig_n_std) * shuffle_stds.mean())
-        _thresh_desc = f"mean+{float(bin_sig_n_std):g}*SD_null"
+    # published behaviour: mean + one representative null SD (~1 SD, permissive)
+    bin_thresh   = float(pop_activity.mean() + np.percentile(shuffle_stds, bin_sig_percentile))
+    _thresh_desc = f"mean+p{bin_sig_percentile:g}(SD_null)"
     sig_bins = np.where(pop_activity > bin_thresh)[0]
     n_sig = len(sig_bins)
     sig_frac = n_sig / max(1, n_bins)
     print(f"[detect_ensembles_ecker] N={N}  n_bins={n_bins} (bin_frames={bin_frames})  "
-          f"normalize_neurons={normalize_neurons!r}  "
           f"{n_sig} bins pass significance threshold ({bin_thresh:.3f}, {_thresh_desc}) "
           f"= {sig_frac:.1%} of bins")
     if sig_frac > 0.10:
@@ -761,7 +659,7 @@ def detect_ensembles_ecker(
               f"events'. The source papers see a few percent; a fraction this high "
               f"usually means the threshold is tracking a slow stimulus/population "
               f"envelope rather than discrete synchronous events, which lets one "
-              f"cluster absorb most of the population. Consider bin_sig_n_std=2..3.")
+              f"cluster absorb most of the population.")
 
     lo, hi = k_range
     hi = min(hi, n_sig - 1) if n_sig > 1 else 0
@@ -820,21 +718,7 @@ def detect_ensembles_ecker(
     # a single matmul — ~5x faster at N=56, T=32k. All neurons then share a lag
     # within a shuffle, which is harmless: every (i, k) test uses only its own
     # marginal null, and Bonferroni does not assume independence across tests.
-    #
-    # Optional population-signal regression (opt-in, see docstring): done here,
-    # not upstream at step 2, so bin-significance detection still sees the raw
-    # population activity ("when"), and only membership testing ("who") sees the
-    # residual. Fit each neuron's linear coupling to the population-mean trace
-    # and subtract it: X_resid[i] = X[i] - beta[i] * pop_mean(t).
     X_test = X
-    if regress_out_population:
-        pop_trace = X.mean(axis=0)
-        pc = pop_trace - pop_trace.mean()
-        Xc_full = X - X.mean(axis=1, keepdims=True)
-        beta = (Xc_full @ pc) / (float(pc @ pc) + 1e-12)                  # (N,)
-        X_test = Xc_full - beta[:, None] * pc[None, :]
-        print(f"[detect_ensembles_ecker] regress_out_population=True: removed "
-              f"shared population-mean coupling (mean |beta|={np.abs(beta).mean():.3f})")
 
     with np.errstate(invalid='ignore'):
         pop_corr = np.corrcoef(X_test)
@@ -865,40 +749,30 @@ def detect_ensembles_ecker(
     member_p = (1.0 + exceed) / (n_shuffles_member + 1.0)              # (N, K_candidate)
     p_floor = 1.0 / (n_shuffles_member + 1)
 
-    if member_correction == 'fdr_bh':
-        # Benjamini-Hochberg. Bonferroni controls the family-wise error rate,
-        # which is the wrong target here: we *expect* many true members, and at
-        # K_candidate=20 the per-test threshold becomes alpha/1120 = 4.5e-5,
-        # requiring >200k shuffles just to be reachable. BH controls the false
-        # discovery rate instead — the fraction of called members that are
-        # spurious — which is what actually matters for a downstream group
-        # statistic, and its threshold for rank i is alpha*i/m, so it stays well
-        # clear of the 1/(n+1) p-value floor.
-        flat  = member_p.ravel()
-        order = np.argsort(flat)
-        ranks = np.arange(1, n_tests + 1)
-        passed = flat[order] <= member_alpha * ranks / n_tests
-        n_pass = int(np.max(np.nonzero(passed)[0]) + 1) if passed.any() else 0
-        p_thresh = float(flat[order][n_pass - 1]) if n_pass else 0.0
-        is_member_all = (member_p <= p_thresh) if n_pass else np.zeros_like(member_p, bool)
-        print(f"[detect_ensembles_ecker] membership: Benjamini-Hochberg FDR "
-              f"q={member_alpha} over {n_tests} tests → p <= {p_thresh:.2e} "
-              f"({n_pass} of {n_tests} tests significant, {n_shuffles_member} shuffles)")
-    else:
-        p_thresh = (member_alpha / n_tests if member_correction == 'bonferroni'
-                    else member_alpha)
-        is_member_all = member_p < p_thresh
-        print(f"[detect_ensembles_ecker] membership: empirical p < {p_thresh:.2e} "
-              f"(alpha={member_alpha}, correction={member_correction!r}, "
-              f"{n_tests} tests, {n_shuffles_member} shuffles)")
+    # Benjamini-Hochberg. Bonferroni would control the family-wise error rate,
+    # which is the wrong target here: we *expect* many true members, and at
+    # K_candidate=20 the per-test threshold becomes alpha/1120 = 4.5e-5, requiring
+    # >200k shuffles just to be reachable. BH controls the false discovery rate
+    # instead — the fraction of called members that are spurious — which is what
+    # actually matters for a downstream group statistic, and its threshold for rank
+    # i is alpha*i/m, so it stays well clear of the 1/(n+1) p-value floor.
+    flat  = member_p.ravel()
+    order = np.argsort(flat)
+    ranks = np.arange(1, n_tests + 1)
+    passed = flat[order] <= member_alpha * ranks / n_tests
+    n_pass = int(np.max(np.nonzero(passed)[0]) + 1) if passed.any() else 0
+    p_thresh = float(flat[order][n_pass - 1]) if n_pass else 0.0
+    is_member_all = (member_p <= p_thresh) if n_pass else np.zeros_like(member_p, bool)
+    print(f"[detect_ensembles_ecker] membership: Benjamini-Hochberg FDR "
+          f"q={member_alpha} over {n_tests} tests → p <= {p_thresh:.2e} "
+          f"({n_pass} of {n_tests} tests significant, {n_shuffles_member} shuffles)")
 
     if p_floor > p_thresh and p_thresh > 0:
         n_needed = int(np.ceil(10.0 / p_thresh))
         print(f"[detect_ensembles_ecker] WARNING: n_shuffles_member="
               f"{n_shuffles_member} floors the empirical p-value at {p_floor:.2e}, "
               f"at or above the threshold {p_thresh:.2e} — membership calls are "
-              f"resolution-limited. Use n_shuffles_member>={n_needed}, or a less "
-              f"conservative member_correction.")
+              f"resolution-limited. Use n_shuffles_member>={n_needed}.")
 
     max_members = max_member_frac * N   # size cutoff; max_member_frac=1.0 → never triggers
     kept_V, kept_M, kept_S, kept_dropped, size_dropped = [], [], [], 0, 0
@@ -995,19 +869,14 @@ def detect_ensembles_ecker(
         'n_bins':             n_bins,
         'n_sig_bins':         n_sig,
         'sig_bin_frac':       float(sig_frac),
-        'bin_sig_n_std':      (False if bin_sig_n_std is False or bin_sig_n_std is None
-                               else float(bin_sig_n_std)),
-        'normalize_neurons':  normalize_neurons,
         'k_scanned':          list(k_range),
         'davies_bouldin_best': float(best_db),
         'davies_bouldin_curve': db_curve,
         'n_candidate_clusters': K_candidate,
         'n_shuffles_member':  int(n_shuffles_member),
         'member_alpha':       float(member_alpha),
-        'member_correction':  member_correction,
         'member_p_threshold': (float(p_thresh) if p_thresh is not None else None),
         'whole_pop_mean_corr': whole_pop_mean_corr,
-        'regress_out_population': regress_out_population,
         'max_member_frac':    float(max_member_frac),
         'n_size_dropped':     size_dropped,
     }
@@ -1043,18 +912,15 @@ def detect_ensembles_dispatch(traces, root_ids, method='lds', **kwargs):
     raise ValueError(f"unknown method {method!r}; expected 'lds' or 'ecker'")
 
 
-def build_activity_matrix(func_data, session, scan_idx, use_spikes=True,
-                           stimulus_type=None, h5_stim_path=None,
-                           return_frames=False, trial_residual=False):
+def build_activity_matrix(func_data, session, scan_idx, h5_stim_path,
+                          trial_residual=False):
     """
     Build (N, T) trace matrix for one (session, scan_idx).
 
-    Every detector downstream treats column `t` as one instant, which is only true
-    if the traces were loaded with `align='interp'` (the `activity_utils` default).
-    Raw traces are on per-unit clocks up to one full frame (~159 ms) apart, and
-    that offset is structured by imaging depth — so unaligned input would bias
-    ensembles towards same-depth membership. This function therefore refuses
-    unaligned payloads rather than silently producing that artifact.
+    Every detector downstream treats column `t` as one instant, which is what the
+    loader's ms_delay interpolation guarantees: raw traces are on per-unit clocks up
+    to one full frame (~159 ms) apart, and that offset is structured by imaging
+    depth, so unaligned input would bias ensembles towards same-depth membership.
 
     Parameters
     ----------
@@ -1062,16 +928,9 @@ def build_activity_matrix(func_data, session, scan_idx, use_spikes=True,
                      `activity_utils.load_ex_functional_data_by_root_id`
     session        : int
     scan_idx       : int
-    use_spikes     : True → spike_trace, False → calcium_trace
-    stimulus_type  : 'clip' | 'monet2' | 'trippy' | 'oracle' | None (all frames)
-                     'oracle' keeps only oracle-clip frames (condition_hashes with ≥5 repeats)
-    h5_stim_path   : path to microns_per_scan_stimuli.h5; required when stimulus_type is set
-    return_frames  : also return `keep_idx`, the scan frame index of each column of Z.
-                     Needed to place anything computed on Z back on the real clock —
-                     e.g. an ensemble activation peak (a row of the detector's S) is a
-                     column of Z, and its wall time is frame_times[keep_idx[t]]. Without
-                     it a caller has to re-derive the trim, which silently rots.
-    trial_residual : requires stimulus_type='oracle'. Replace each neuron's trace with
+    h5_stim_path   : path to microns_per_scan_stimuli.h5. Only oracle-clip frames
+                     are kept (condition_hashes with ≥5 repeats).
+    trial_residual : replace each neuron's trace with
                      its per-clip TRIAL RESIDUAL: within each oracle clip, subtract that
                      clip's average over its ~10 repeats from every repeat. See
                      "Trial-residual mode" below.
@@ -1109,29 +968,16 @@ def build_activity_matrix(func_data, session, scan_idx, use_spikes=True,
     Z          (N, T) float32
     root_ids   sorted list of int root_ids (length N)
     fps        float
-    keep_idx   (T,) int64 — only when return_frames=True. In trial_residual mode this
-               is still the originating scan frame of each column, so a column maps to
-               a real time via frame_times[keep_idx[t]] — but the mapping is no longer
-               monotonic or unique (the same frame recurs once per repeat).
     """
-    if trial_residual and (stimulus_type is None or stimulus_type.lower() != 'oracle'):
-        raise ValueError("trial_residual=True requires stimulus_type='oracle' — "
-                         "subtracting a trial average needs repeats of the same stimulus")
-    trace_key = 'spike_trace' if use_spikes else 'calcium_trace'
-    traces, fps_seen, frame_times = {}, None, None
+    trace_key = 'spike_trace'
+    traces, fps_seen = {}, None
     for rid_str, units in func_data.items():
-        for (sess, scan, uid), data in units.items():
+        for (sess, scan, _uid), data in units.items():
             if sess != session or scan != scan_idx or trace_key not in data:
                 continue
-            if data.get('align') is None:
-                raise ValueError(
-                    "build_activity_matrix requires ms_delay-aligned traces: neuron "
-                    f"{rid_str} unit ({sess},{scan},{uid}) was loaded with align=None. "
-                    "Reload with align='interp' (the activity_utils default).")
             tr = np.asarray(data[trace_key], dtype=np.float32)
             if fps_seen is None:
                 fps_seen = float(data['fps'])
-                frame_times = np.asarray(data['frame_times'])
             # one unit per neuron per scan (`break` below). A collision here means
             # this root_id pooled units from >1 nucleus — a merge-error segment,
             # i.e. genuinely different cells — so averaging them would blend two
@@ -1147,87 +993,44 @@ def build_activity_matrix(func_data, session, scan_idx, use_spikes=True,
         raise RuntimeError(f'No traces for session={session}, scan_idx={scan_idx}')
     root_ids_out = sorted(traces.keys())
     Z = np.vstack([traces[r] for r in root_ids_out])
-    # Column t of Z is scan frame keep_idx[t]. Every branch below that drops columns
-    # must slice this identically, so callers can map a column of Z (or a row of the
-    # detector's activation matrix S) back to a real time via frame_times[keep_idx[t]].
-    keep_idx = np.arange(Z.shape[1], dtype=np.int64)
+    from activity_utils import get_oracle_condition_hashes, load_scan_trials_df
+    oracle_windows = get_oracle_condition_hashes(
+        load_scan_trials_df(h5_stim_path, session, scan_idx))
+    if not oracle_windows:
+        raise ValueError(f'No oracle clips for session={session} scan={scan_idx}')
 
-    # stimulus trial times are real seconds from nda.Trial, so they must be located
-    # in the real frame clock. `t * fps` drifts up to ~2.5 s (≈16 frames) by the end
-    # of a 40k-frame scan, which walks every stimulus window off its trials.
-    def _frame_of(t, side):
-        return int(np.searchsorted(frame_times, float(t), side=side))
-    if stimulus_type is not None:
-        if h5_stim_path is None:
-            raise ValueError('h5_stim_path required when stimulus_type is set')
-        from activity_utils import load_scan_trials_df
-        trials = load_scan_trials_df(h5_stim_path, session, scan_idx)
-        if stimulus_type.lower() == 'oracle':
-            from activity_utils import get_oracle_condition_hashes
-            oracle_windows = get_oracle_condition_hashes(trials)
-            if not oracle_windows:
-                raise ValueError(f'No oracle clips for session={session} scan={scan_idx}')
-            if trial_residual:
-                # Same per-clip truncation and (clip, repeat, frame) ordering as
-                # activity_utils.trial_residual_vector, applied to all N rows at once so
-                # every neuron's columns stay index-aligned — that alignment is what makes
-                # a cross-neuron correlation on Z a noise correlation.
-                parts, idx_parts, n_rep = [], [], []
-                for _ch, windows in oracle_windows:
-                    min_len = min(int(e) - int(s) for (s, e) in windows)
-                    if min_len <= 0:
-                        continue
-                    rep = np.stack([Z[:, int(s):int(s) + min_len] for (s, _e) in windows],
-                                   axis=1)                       # (N, n_repeats, min_len)
-                    parts.append((rep - rep.mean(axis=1, keepdims=True)).reshape(Z.shape[0], -1))
-                    idx_parts.append(np.concatenate(
-                        [keep_idx[int(s):int(s) + min_len] for (s, _e) in windows]))
-                    n_rep.append(len(windows))
-                if not parts:
-                    raise RuntimeError('Oracle trial-residual left no usable clips')
-                Z        = np.concatenate(parts, axis=1).astype(np.float32)
-                keep_idx = np.concatenate(idx_parts)
-                if min(n_rep) < 3:
-                    print(f'[build_activity_matrix] WARNING: s{session} sc{scan_idx} has a '
-                          f'clip with only {min(n_rep)} repeats — the trial average is a '
-                          f'poor estimate and the residual keeps part of the stimulus response')
-                if Z.shape[1] < 100:
-                    raise RuntimeError(f'Oracle trial-residual left only {Z.shape[1]} frames')
-            else:
-                keep = np.zeros(Z.shape[1], dtype=bool)
-                for _ch, windows in oracle_windows:
-                    for s, e in windows:
-                        keep[int(s):int(e)] = True
-                if keep.sum() < 100:
-                    raise RuntimeError(f'Oracle filter left only {keep.sum()} frames')
-                Z, keep_idx = Z[:, keep], keep_idx[keep]
-        else:
-            kind = stimulus_type.lower()
-            tdf  = trials[trials['type'].str.lower().str.endswith(kind)]
-            if tdf.empty:
-                raise ValueError(f'No trials of type {stimulus_type!r}')
-            T, keep = Z.shape[1], np.zeros(Z.shape[1], dtype=bool)
-            for r in tdf.itertuples(index=False):
-                i0 = max(0, _frame_of(r.start_time, 'left'))
-                i1 = min(T, _frame_of(r.end_time, 'right'))
-                keep[i0:i1] = True
-            if keep.sum() < 100:
-                raise RuntimeError(f'Stimulus filter left only {keep.sum()} frames')
-            Z, keep_idx = Z[:, keep], keep_idx[keep]
-    elif h5_stim_path is not None:
-        # No type filter but h5_stim_path given: trim to [first-stim-start, last-stim-end]
-        # so pre- and post-recording blank frames are excluded even in the "all frames" mode.
-        try:
-            from activity_utils import load_scan_trials_df
-            trials = load_scan_trials_df(h5_stim_path, session, scan_idx)
-            if not trials.empty:
-                i0 = max(0, _frame_of(trials['start_time'].min(), 'left'))
-                i1 = min(Z.shape[1], _frame_of(trials['end_time'].max(), 'right'))
-                Z, keep_idx = Z[:, i0:i1], keep_idx[i0:i1]
-        except Exception:
-            pass  # missing scan key in H5 → keep all frames
-    if return_frames:
-        return Z, root_ids_out, fps_seen, keep_idx
+    if trial_residual:
+        # Same per-clip truncation and (clip, repeat, frame) ordering as
+        # activity_utils.trial_residual_vector, applied to all N rows at once so
+        # every neuron's columns stay index-aligned — that alignment is what makes
+        # a cross-neuron correlation on Z a noise correlation.
+        parts, n_rep = [], []
+        for _ch, windows in oracle_windows:
+            min_len = min(int(e) - int(s) for (s, e) in windows)
+            if min_len <= 0:
+                continue
+            rep = np.stack([Z[:, int(s):int(s) + min_len] for (s, _e) in windows],
+                           axis=1)                       # (N, n_repeats, min_len)
+            parts.append((rep - rep.mean(axis=1, keepdims=True)).reshape(Z.shape[0], -1))
+            n_rep.append(len(windows))
+        if not parts:
+            raise RuntimeError('Oracle trial-residual left no usable clips')
+        Z = np.concatenate(parts, axis=1).astype(np.float32)
+        if min(n_rep) < 3:
+            print(f'[build_activity_matrix] WARNING: s{session} sc{scan_idx} has a '
+                  f'clip with only {min(n_rep)} repeats — the trial average is a '
+                  f'poor estimate and the residual keeps part of the stimulus response')
+        if Z.shape[1] < 100:
+            raise RuntimeError(f'Oracle trial-residual left only {Z.shape[1]} frames')
+    else:
+        keep = np.zeros(Z.shape[1], dtype=bool)
+        for _ch, windows in oracle_windows:
+            for s, e in windows:
+                keep[int(s):int(e)] = True
+        if keep.sum() < 100:
+            raise RuntimeError(f'Oracle filter left only {keep.sum()} frames')
+        Z = Z[:, keep]
+
     return Z, root_ids_out, fps_seen
 
 
@@ -1483,43 +1286,27 @@ def compute_avg_dist_targets(label_to_members, pool, pos_array, dist_tol, abs_fl
     return avg_dist_targets
 
 
-def build_pool_pos_arrays(pool, full_column_pool=None, enabled=True, verbose=True):
-    """Build soma-position arrays indexed to one or two pools for distance-matched nulls.
+def build_pool_pos_arrays(pool, verbose=True):
+    """Soma positions indexed to the pool, for the distance-matched nulls.
 
-    Returns (pos_array_pool, pos_array_full_column). When enabled=False, returns
-    (None, None). When full_column_pool is None or is the same object as pool,
-    both return values are the same array.
+    Returns an (n_ex, 3) array; rows for neurons with no position stay NaN.
     """
-    if not enabled:
-        if verbose:
-            print('Distance matching disabled — pos_arrays=None')
-        return None, None
-
     from utils import load_neuron_position_transformed
     neurons_pos = load_neuron_position_transformed(use_column_manual_ct=True)
     pos_lookup  = neurons_pos.set_index('root_id')[
         ['pt_position_xt', 'pt_position_yt', 'pt_position_zt']]
 
-    def _build(p, label):
-        arr = np.full((p['n_ex'], 3), np.nan)
-        for rid, idx in p['rid_to_idx'].items():
-            if rid in pos_lookup.index:
-                arr[idx] = pos_lookup.loc[rid].values
-        if verbose:
-            n_have = p['n_ex'] - int(np.isnan(arr[:, 0]).sum())
-            print(f'pos_array ({label}): {n_have}/{p["n_ex"]} neurons have positions')
-        return arr
-
-    pos_pool = _build(pool, 'pool / Metrics A+B')
-    if full_column_pool is None or full_column_pool is pool:
-        if verbose and full_column_pool is not None:
-            print('pos_array (full column): same as pool')
-        return pos_pool, pos_pool
-    pos_fc = _build(full_column_pool, 'full column')
-    return pos_pool, pos_fc
+    arr = np.full((pool['n_ex'], 3), np.nan)
+    for rid, idx in pool['rid_to_idx'].items():
+        if rid in pos_lookup.index:
+            arr[idx] = pos_lookup.loc[rid].values
+    if verbose:
+        n_have = pool['n_ex'] - int(np.isnan(arr[:, 0]).sum())
+        print(f'pos_array: {n_have}/{pool["n_ex"]} neurons have positions')
+    return arr
 
 
-def build_control_eligible_idx(pool, label_to_members, restrict_root_ids=None, verbose=True):
+def build_control_eligible_idx(pool, label_to_members, verbose=True):
     """Pool indices a control group may be drawn from: everything MINUS every ensemble member.
 
     Returns (eligible_idx, eligible_root_ids).
@@ -1546,26 +1333,18 @@ def build_control_eligible_idx(pool, label_to_members, restrict_root_ids=None, v
     pool              : dict from build_ex_pool_arrays — defines the index space
     label_to_members  : dict label -> list[root_id]; the union over all labels
                         (all ensembles, all scans) is what gets excluded
-    restrict_root_ids : optional iterable — additionally restrict eligibility to
-                        these root_ids (e.g. the recorded neurons, for a pool matched
-                        on "was imaged" as well as being ensemble-free)
     """
     rid_to_idx  = pool['rid_to_idx']
     member_rids = {rid for members in label_to_members.values() for rid in members}
     member_idx  = {rid_to_idx[r] for r in member_rids if r in rid_to_idx}
 
     candidate_idx = np.arange(pool['n_ex'])
-    if restrict_root_ids is not None:
-        keep = {rid_to_idx[r] for r in restrict_root_ids if r in rid_to_idx}
-        candidate_idx = np.array(sorted(keep), dtype=int)
-
     eligible_idx = np.array([i for i in candidate_idx if i not in member_idx], dtype=int)
     idx_to_rid   = {v: k for k, v in rid_to_idx.items()}
     eligible_root_ids = np.array([idx_to_rid[i] for i in eligible_idx])
 
     if verbose:
-        scope = 'pool' if restrict_root_ids is None else 'restricted pool'
-        print(f'Control eligibility: {len(eligible_idx)} of {len(candidate_idx)} {scope} neurons  '
+        print(f'Control eligibility: {len(eligible_idx)} of {len(candidate_idx)} pool neurons  '
               f'(excluded {len(member_idx)} neurons that are a member of ≥1 ensemble '
               f'in any scan, out of {len(member_rids)} distinct member root_ids)')
     return eligible_idx, eligible_root_ids
@@ -1703,8 +1482,7 @@ def run_shared_input_bootstrap(label_to_members, all_ex_root_ids, syn_df,
                             label_col='k', n_controls=1000, seed=0,
                             max_attempts=500_000, n_boot=None,
                             pos_array=None, dist_tol=0.2, abs_floor_um=15.0,
-                            degree_array=None, degree_tol=0.2,
-                            precomputed_groups=None, eligible_idx=None,
+                            degree_array=None, degree_tol=0.2, eligible_idx=None,
                             syn_with_tags=None):
     """Shared presynaptic input to ensemble members — the intersection of their
     presynaptic partner sets (figures 6D and 6E).
@@ -1728,14 +1506,7 @@ def run_shared_input_bootstrap(label_to_members, all_ex_root_ids, syn_df,
                    controls must also match the ensemble's SUMMED in-degree (E and I,
                    both within degree_tol). Strongly recommended — see that function's
                    docstring for why an unmatched null mostly measures in-degree.
-                   Setting this forces resampling: `precomputed_groups` from the
-                   are not degree-matched, so they are ignored (with a printed note).
     degree_tol   : fractional tolerance for summed in-degree (default 0.2 = ±20%).
-    precomputed_groups : optional dict {label: list[np.ndarray]} of pool-index groups
-                   already accepted by iter_matched_groups (e.g. from the spine-targeting
-                   sample_matched_controls(..., return_groups=True)). When provided,
-                   sampling is skipped and shared-input stats are computed on these
-                   groups directly. Pool indexing must match `pool`.
     eligible_idx : optional restriction on which pool indices controls may be drawn
                    from — see build_control_eligible_idx. Note `all_ex_root_ids` must
                    still span the FULL column: it defines which post-synaptic neurons
@@ -1846,51 +1617,37 @@ def run_shared_input_bootstrap(label_to_members, all_ex_root_ids, syn_df,
 
     idx_to_rid = {v: k for k, v in pool['rid_to_idx'].items()}
 
-    if precomputed_groups is not None and degree_array is not None:
-        print('Shared input: degree_array given — ignoring precomputed_groups '
-              '(the spine-targeting controls are not degree-matched) and resampling')
-        precomputed_groups = None
+    # The same edge-matched (+ optionally compactness-matched) controls spine targeting uses —
+    # driven by the shared iter_matched_groups sampler.
+    match_label = 'size + edge'
+    if pos_array is not None:
+        match_label += ' + compactness'
+    if degree_array is not None:
+        match_label += ' + in-degree'
+    print(f'Sampling {match_label} matched controls for shared input...')
 
-    if precomputed_groups is not None:
-        n_total = sum(len(v) for v in precomputed_groups.values())
-        print(f'Shared input: reusing {n_total} precomputed control groups '
-              f'({len(precomputed_groups)} labels) — sampling skipped')
-        ctrl_rows = []
-        for label, groups in precomputed_groups.items():
-            for group_idx in groups:
-                ctrl_rows.append(_group_row(label, [idx_to_rid[int(i)] for i in group_idx]))
-    else:
-        # The same edge-matched (+ optionally compactness-matched) controls spine targeting uses —
-        # driven by the shared iter_matched_groups sampler.
-        match_label = 'size + edge'
-        if pos_array is not None:
-            match_label += ' + compactness'
-        if degree_array is not None:
-            match_label += ' + in-degree'
-        print(f'Sampling {match_label} matched controls for shared input...')
+    def _seed_fn(row, lc=label_col, s=seed):
+        # crc32, not hash(): CPython randomises hash(str) per process.
+        # See the module docstring.
+        return int(s * 997 + zlib.crc32(str(row[lc]).encode()) % 100_000)
 
-        def _seed_fn(row, lc=label_col, s=seed):
-            # crc32, not hash(): CPython randomises hash(str) per process.
-            # See the module docstring.
-            return int(s * 997 + zlib.crc32(str(row[lc]).encode()) % 100_000)
+    # iter_matched_groups iterates ensembles_df rows; align it to label_to_members
+    # order by selecting the matching subset (preserving n_members/n_edges columns).
+    ens_for_iter = (ensembles_df.set_index(label_col)
+                                .loc[list(label_to_members.keys()),
+                                     ['n_members', 'n_edges']]
+                                .reset_index())
 
-        # iter_matched_groups iterates ensembles_df rows; align it to label_to_members
-        # order by selecting the matching subset (preserving n_members/n_edges columns).
-        ens_for_iter = (ensembles_df.set_index(label_col)
-                                    .loc[list(label_to_members.keys()),
-                                         ['n_members', 'n_edges']]
-                                    .reset_index())
-
-        ctrl_rows = []
-        for label, group_idx in iter_matched_groups(
-                ens_for_iter, label_col=label_col, seed_fn=_seed_fn, pool=pool,
-                n_controls=n_controls, max_attempts=max_attempts,
-                verbose_short_only=True,
-                label_to_members=label_to_members, match_edges=True,
-                pos_array=pos_array, dist_tol=dist_tol, abs_floor_um=abs_floor_um,
-                degree_array=degree_array, degree_tol=degree_tol,
-                eligible_idx=eligible_idx):
-            ctrl_rows.append(_group_row(label, [idx_to_rid[i] for i in group_idx]))
+    ctrl_rows = []
+    for label, group_idx in iter_matched_groups(
+            ens_for_iter, label_col=label_col, seed_fn=_seed_fn, pool=pool,
+            n_controls=n_controls, max_attempts=max_attempts,
+            verbose_short_only=True,
+            label_to_members=label_to_members, match_edges=True,
+            pos_array=pos_array, dist_tol=dist_tol, abs_floor_um=abs_floor_um,
+            degree_array=degree_array, degree_tol=degree_tol,
+            eligible_idx=eligible_idx):
+        ctrl_rows.append(_group_row(label, [idx_to_rid[i] for i in group_idx]))
     ctrl_df = pd.DataFrame(ctrl_rows)
 
     # Paired bootstrap per flavor
@@ -2010,7 +1767,7 @@ def build_member_cell_type_df(label_to_members, neurons_df):
 
 
 def run_shared_input_strength_bootstrap(label_to_members, pool, ctrl_groups, feature_array,
-                                mode='mean', n_null=1000, seed=0,
+                                n_null=1000, seed=0,
                                 name='shared input strength', value_label='value'):
     """Paired bootstrap comparing a per-neuron feature of ensemble members vs controls.
 
@@ -2021,9 +1778,8 @@ def run_shared_input_strength_bootstrap(label_to_members, pool, ctrl_groups, fea
     ctrl_groups      : dict label -> list[np.ndarray of pool indices], from
                        sample_matched_controls(..., return_groups=True). Must be keyed
                        by the same labels as label_to_members.
-    feature_array    : (n_ex,) for mode='mean', or (n_ex, 2) [num, den] for mode='ratio'
-    mode             : 'mean'  → observed = mean of the feature over all pooled members
-                       'ratio' → observed = Σnumerator / Σdenominator over all members
+    feature_array    : (n_ex,) per-neuron values, indexed like the pool. The
+                       observed statistic is their mean over all pooled members.
 
     A neuron in two ensembles is counted twice, on both the observed and the null side
     (each replicate draws one control group per ensemble), so the pairing holds.
@@ -2036,18 +1792,14 @@ def run_shared_input_strength_bootstrap(label_to_members, pool, ctrl_groups, fea
     rid_to_idx = pool['rid_to_idx']
 
     def _num_den(idx):
-        """(numerator, denominator) of the group's contribution to the pooled statistic.
+        """(Σvalue, n_finite) — the group's contribution to the pooled mean.
 
-        mode='ratio' → (Σnumerator, Σdenominator); mode='mean' → (Σvalue, n_finite), so
-        that summing both across groups and dividing reproduces the pooled mean exactly.
-        Keeping the pair rather than the ratio is what makes the statistic re-poolable
-        over any subset of ensembles (see shared_input_by_size).
+        Keeping the pair rather than the ratio is what makes the statistic
+        re-poolable over any subset of ensembles (see shared_input_by_size).
         """
         idx = np.asarray(idx, dtype=int)
         if len(idx) == 0:
             return 0.0, 0.0
-        if mode == 'ratio':
-            return float(feature_array[idx, 0].sum()), float(feature_array[idx, 1].sum())
         vals = feature_array[idx]
         vals = vals[np.isfinite(vals)]
         return float(vals.sum()), float(len(vals))
@@ -2099,25 +1851,8 @@ def run_shared_input_strength_bootstrap(label_to_members, pool, ctrl_groups, fea
             'p_emp': p_emp, 'p_greater': p_greater, 'p_less': p_less, 'star': star,
             'fold': obs / null_mean if null_mean else np.nan,
             'n_members': len(obs_idx), 'usable_labels': usable,
-            'mode': mode, 'value_label': value_label,
+            'value_label': value_label,
             'real_df': real_df, 'ctrl_df': ctrl_df, 'label_col': 'label'}
-
-
-def results_filename(method, stim='oracle', pool='recorded', dist=True,
-                          residual=False, degree=False):
-    """Canonical section-5 pickle name. Single source of truth for the save/load pair.
-
-    `residual` and `degree` append suffixes rather than altering the existing stem, so
-    filenames written before those flags existed still resolve (each flag's default is
-    the pre-existing behaviour and adds nothing). The trailing `_allmem` is now fixed:
-    distance matching is always on the group's all-pair compactness. It is kept in the
-    name so a pickle states which distance control produced it, and so the paths written
-    under the two-mode run matrix still resolve.
-    """
-    stim_label = f'{stim}-resid' if residual else stim
-    return (f'{method}_{stim_label}_{pool}_{"distance" if dist else ""}'
-            f'{"_deg" if degree else ""}'
-            f'{"_allmem" if dist else ""}.pkl')
 
 
 def _q(series):

@@ -54,8 +54,8 @@ Steps, in dependency order:
               connectome_outgoing_synapses.csv
               connectivity_matrix/
   subnets   data/micro_column_network/subnetworks/      minutes, derived, offline
-  meshes    data/micro_column_network/meshes/           ~1.4 GB — figures 1, 2, 7, S1
-  axon_pr   data/all_axon_pr_network/                   ~a day — figure S3 only
+  meshes    data/micro_column_network/meshes/           ~figures 1, 2, 7, S1
+  axon_pr   data/all_axon_pr_network/                   ~figure S3 only
 
 `axon_pr` is the same pipeline over a different cell list (every cell with a proofread
 axon) and is needed by one supplementary figure. Skip it with `--steps` if S3 is not
@@ -619,7 +619,7 @@ def download_spines(net: Network, ids, client, incoming: bool, allow_incomplete=
 
 
 def download_meshes(client):
-    """The ten segmented meshes the figures draw, ~1.4 GB in total.
+    """The ten segmented meshes the figures draw.
 
     Figures 1, 2 and S1 have theirs in the Zenodo snapshot. Figure 7 panel A renders its
     six cells as meshes only when `CELLS_MODE = 'meshes'`, and the snapshot carries only

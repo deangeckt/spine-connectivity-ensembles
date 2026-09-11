@@ -1,8 +1,6 @@
-import os
 import re
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 
 from connectivity_matrix_utils import load_connectivity
 from connectome_types import (

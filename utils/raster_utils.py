@@ -16,7 +16,6 @@ TRACE_KEY = 'spike_trace'
 # Detector settings. These must match scripts/ensemble_run.py's: a divergence silently
 # changes K, and K changes which ensemble is ranked where.
 LDS_N_SURROGATES         = 1000
-LDS_K_FROM               = 'auto'
 LDS_MEMBERSHIP_THRESHOLD = 2
 LDS_MAX_MEMBER_FRAC      = 0.8
 RANDOM_SEED              = 0
@@ -101,15 +100,14 @@ def detect_scan_ensembles(neurons_df, session, scan_idx):
 
     pool_rids = scan_pool_root_ids(neurons_df, session, scan_idx)
     func = load_ex_functional_data_by_root_id(
-        CALCIUM_H5_PATH, neurons_df, pool_rids, align='interp',
+        CALCIUM_H5_PATH, neurons_df, pool_rids,
         datasets=(TRACE_KEY,), progress=False)
 
-    # stimulus_type='oracle' keeps only the maximally-repeated clip frames
+    # only the maximally-repeated oracle clip frames
     Z, ens_root_ids, _fps = build_activity_matrix(
-        func, session, scan_idx, use_spikes=True,
-        stimulus_type='oracle', h5_stim_path=STIMULI_H5_PATH)
+        func, session, scan_idx, STIMULI_H5_PATH)
 
-    kwargs = dict(n_surrogates=LDS_N_SURROGATES, k_from=LDS_K_FROM,
+    kwargs = dict(n_surrogates=LDS_N_SURROGATES,
                   membership_threshold_std=LDS_MEMBERSHIP_THRESHOLD,
                   max_member_frac=LDS_MAX_MEMBER_FRAC,
                   random_state=RANDOM_SEED)
@@ -162,11 +160,6 @@ def build_oracle_raster(payload, oracle_windows):
     blacks out the rest of the figure. Amplitudes stay comparable across clips within a
     row, but not between rows.
     """
-    if payload.get('align') is None:
-        raise ValueError(
-            'build_oracle_raster needs ms_delay-aligned traces: trial windows are '
-            'frame indices into the scan (field-1) clock, so an unaligned trace is '
-            "sliced at the wrong frames. Reload with align='interp'.")
     if not oracle_windows:
         raise ValueError('oracle_windows is empty — no oracle clips in this scan')
 

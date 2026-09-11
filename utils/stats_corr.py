@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats as sp_stats
 from scipy.stats import pearsonr
@@ -35,12 +34,6 @@ def add_reg_line(x, y, ax, color, add_reg_text='none', reg_text_font_size = 16,
         kwargs['va'] = 'bottom'
         return _orig_text(*args, **kwargs)
 
-    if add_reg_text == 'slope_and_r2':
-        ax.text = _text_once
-        ax.text(x_text, y_text, f'm={slope:.2f}\n$R^2$={r_squared:.2f}',
-                color=color, fontsize=reg_text_font_size, ha='left', va='top', alpha=0.9,
-                bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1))
-
     if add_reg_text == 'r_only':
         ax.text = _text_once
         ax.text(x_text, y_text, full_only_r_text,
@@ -61,7 +54,7 @@ def add_log_curve(df, x_col, y_col, ax, lw=1.2, alpha=1, linestyle='--', color='
         ax.plot(xs, log_fit(xs, *popt), color=color, lw=lw, alpha=alpha, linestyle=linestyle)
         print(f' log fit: a={a:.4f}, b={b:.4f}')
     except RuntimeError:
-        print(f'log fit failed')
+        print('log fit failed')
 
     spearman_rho, p = sp_stats.spearmanr(clean[x_col], clean[y_col])
     x_text, y_text = 0.98, 0.02

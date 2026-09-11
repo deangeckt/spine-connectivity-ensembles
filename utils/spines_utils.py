@@ -271,44 +271,37 @@ def get_connectivity_features(filtered_df, syn_mat, filtered_mapping, neuron_clf
 
 ## ── Shuffle factory ──────────────────────────────────────────────────────────
 
-def _generate_one_shuffle(bin_mat, shuffle_mode, neuron_clf_type,
-                           filtered_mapping, shuffle_preserve_EI, seed=None):
-    """Internal: generate a single shuffled binary matrix."""
-    if shuffle_mode == 'cfg':
-        import scipy.sparse as sp
-        if shuffle_preserve_EI:
-            EE, EI, IE, II, ex_idx, inh_idx = split_syn_mat_by_type_four(
-                bin_mat, filtered_mapping, neuron_clf_type)
+def _generate_one_shuffle(bin_mat, neuron_clf_type, filtered_mapping,
+                          shuffle_preserve_EI, seed=None):
+    """Internal: one configuration-model shuffle of the binary matrix."""
+    import scipy.sparse as sp
+    if shuffle_preserve_EI:
+        EE, EI, IE, II, ex_idx, inh_idx = split_syn_mat_by_type_four(
+            bin_mat, filtered_mapping, neuron_clf_type)
 
-            def run_cfg_model(block, block_seed):
-                sparse_block = sp.coo_matrix((block > 0).astype(int))
-                return configuration_model(sparse_block, seed=block_seed).toarray()
+        def run_cfg_model(block, block_seed):
+            sparse_block = sp.coo_matrix((block > 0).astype(int))
+            return configuration_model(sparse_block, seed=block_seed).toarray()
 
-            rand_EE = run_cfg_model(EE, seed if seed is None else seed)
-            rand_EI = run_cfg_model(EI, seed if seed is None else seed + 1)
-            rand_IE = run_cfg_model(IE, seed if seed is None else seed + 2)
-            rand_II = run_cfg_model(II, seed if seed is None else seed + 3)
-            return merge_syn_mats_four_blocks(rand_EE, rand_EI, rand_IE, rand_II,
-                                              ex_idx, inh_idx, bin_mat.shape[0])
-        else:
-            sparse_mat = sp.coo_matrix(bin_mat)
-            return configuration_model(sparse_mat, seed=seed).toarray()
+        rand_EE = run_cfg_model(EE, seed if seed is None else seed)
+        rand_EI = run_cfg_model(EI, seed if seed is None else seed + 1)
+        rand_IE = run_cfg_model(IE, seed if seed is None else seed + 2)
+        rand_II = run_cfg_model(II, seed if seed is None else seed + 3)
+        return merge_syn_mats_four_blocks(rand_EE, rand_EI, rand_IE, rand_II,
+                                          ex_idx, inh_idx, bin_mat.shape[0])
 
-    else:
-        raise ValueError(f"Unknown shuffle_mode '{shuffle_mode}'. "
-                         "Only 'cfg' is supported.")
+    sparse_mat = sp.coo_matrix(bin_mat)
+    return configuration_model(sparse_mat, seed=seed).toarray()
 
 
 def generate_shuffles(filtered_syn_mat, filtered_mapping, neuron_clf_type,
-                      shuffle_mode, amount,
-                      shuffle_preserve_EI=True, seed=None):
-    """Generate shuffled connectivity matrices in memory (no disk I/O).
+                      amount, shuffle_preserve_EI=True, seed=None):
+    """Generate configuration-model shuffles of the connectivity matrix, in memory.
 
     Args:
         filtered_syn_mat  (np.ndarray):  N×N connectivity matrix.
         filtered_mapping  (dict):        {matrix_index: root_id}
         neuron_clf_type   (dict):        {root_id: {'clf_type': 'E' | 'I'}}
-        shuffle_mode      (str):         'cfg' (configuration model).
         amount            (int):         Number of shuffled networks to generate.
         shuffle_preserve_EI (bool):      Shuffle within EE/EI/IE/II blocks independently.
         seed              (int):         Base random seed (offset by 10 per iteration).
@@ -319,11 +312,10 @@ def generate_shuffles(filtered_syn_mat, filtered_mapping, neuron_clf_type,
     bin_mat = (filtered_syn_mat > 0).astype(int)
     return [
         _generate_one_shuffle(
-            bin_mat, shuffle_mode, neuron_clf_type,
-            filtered_mapping, shuffle_preserve_EI,
+            bin_mat, neuron_clf_type, filtered_mapping, shuffle_preserve_EI,
             seed=seed + i * 10 if seed is not None else None
         )
-        for i in tqdm(range(amount), desc=f"Shuffling [{shuffle_mode}]")
+        for i in tqdm(range(amount), desc='Shuffling')
     ]
 
 
