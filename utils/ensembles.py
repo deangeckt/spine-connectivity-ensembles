@@ -20,8 +20,7 @@ describes, in one module:
                    `run_shared_input_bootstrap`             figure 6D, 6E / S14D, S14E
                    `run_shared_input_strength_bootstrap`    figure S15B
   reporting        `shared_input_by_size` re-aggregates shared input per ensemble size
-                   (figure 6D right), `collect_run_numbers` / `format_run_numbers_md`
-                   write the `_numbers.md` sidecar holding every count the paper quotes
+                   (figure 6D right)
 
 `scripts/ensemble_run.py` drives all of it and writes one pickle per detector into
 `data/activity/ensembles/`. The figure notebooks only read those pickles; none of them
@@ -96,8 +95,8 @@ def require_ensemble_results(*methods):
             '    python scripts/ensemble_run.py',
             '',
             'It detects ensembles in every scan and runs the matched-control bootstraps',
-            'for both detectors, writing one .pkl and one _numbers.md per detector into',
-            'data/activity/ensembles/. Budget 1-3 hours and 1-3 GB of RAM.',
+            'for both detectors, writing one .pkl per detector into',
+            'data/activity/ensembles/. Budget 1-2 hours and 1-3 GB of RAM.',
             '',
             'It needs the two activity H5 files first - run',
             'activity_utils.require_activity_h5() to check, and see the README for how',
@@ -1749,8 +1748,7 @@ def build_member_cell_type_df(label_to_members, neurons_df):
     """One row per ensemble member slot: scan_k, root_id, cell_type.
 
     Stored in the results pickle by the run so `results_analysis.ipynb` can show the
-    cell-type composition of the detected ensembles without loading the connectome —
-    the same reason `collect_run_numbers` reads only from the pickle.
+    cell-type composition of the detected ensembles without loading the connectome.
 
     A neuron in two ensembles appears twice, matching how every member-level metric
     counts slots.
@@ -1853,309 +1851,6 @@ def run_shared_input_strength_bootstrap(label_to_members, pool, ctrl_groups, fea
             'n_members': len(obs_idx), 'usable_labels': usable,
             'value_label': value_label,
             'real_df': real_df, 'ctrl_df': ctrl_df, 'label_col': 'label'}
-
-
-def _q(series):
-    """(median, min, max) of a numeric series, as plain ints/floats."""
-    s = pd.Series(series).dropna()
-    if not len(s):
-        return (np.nan, np.nan, np.nan)
-    return (float(s.median()), float(s.min()), float(s.max()))
-
-
-def collect_run_numbers(results, label=''):
-    """Every count behind one run, as a nested dict of plain numbers.
-
-    Sections: 'run', 'detection', 'members', 'anatomy', 'controls', 'metrics',
-    and (when the per-label tables are present) 'by_size' as a DataFrame.
-
-    Reads only what `ensemble_run.py` already saved — no connectome access — so it can
-    be called on any pickle, including from a notebook.
-    """
-    ens     = results['all_ensembles_df']
-    members = results['ensemble_members_by_scank']
-    a = results.get('spine_targeting') or {}
-    b = results.get('connection_probability') or {}
-    c = results.get('shared_input') or {}
-
-    slots       = [rid for mem in members.values() for rid in mem]
-    distinct    = set(slots)
-    multi_ens   = sum(1 for r in distinct if slots.count(r) > 1)
-    size_counts = ens['n_members'].value_counts().sort_index()
-
-    scan_info = results.get('scan_info_df')
-    out = {
-        'run': {
-            'label':          label or results.get('method', ''),
-            'method':         results.get('method', 'n/a'),
-            'stimulus':       results.get('stimulus_type', 'n/a'),
-            'trial_residual': results.get('oracle_trial_residual', 'n/a'),
-            'control_pool':   results.get('control_pool', 'n/a'),
-            'n_controls_requested': results.get('n_controls', np.nan),
-        },
-        'detection': {
-            'n_column_ex':      results.get('n_column_ex', np.nan),
-            'n_recorded':       results.get('n_recorded', np.nan),
-            'n_scans_total':    (len(scan_info) if scan_info is not None else np.nan),
-            'n_scans_used':     ens[['session', 'scan_idx']].drop_duplicates().shape[0],
-            'skip_counts':      results.get('skip_counts', {}),
-            'neurons_per_scan': (_q(scan_info.loc[scan_info['used'], 'n_neurons'])
-                                 if scan_info is not None else (np.nan,) * 3),
-            'frames_per_scan':  (_q(scan_info.loc[scan_info['used'], 'n_frames'])
-                                 if scan_info is not None else (np.nan,) * 3),
-            'ens_per_scan':     (_q(scan_info.loc[scan_info['used'], 'n_ensembles'])
-                                 if scan_info is not None else (np.nan,) * 3),
-            # detector internals, kept per scan by ensemble_run.py — Methods numbers
-            # that otherwise live only in the run's stdout
-            'detector_meta':    ({c[5:]: _q(scan_info.loc[scan_info['used'], c])
-                                  for c in scan_info.columns if c.startswith('meta_')
-                                  and pd.api.types.is_numeric_dtype(scan_info[c])}
-                                 if scan_info is not None else {}),
-        },
-        'members': {
-            'n_ensembles':       len(ens),
-            'size_median':       float(ens['n_members'].median()),
-            'size_min':          int(ens['n_members'].min()),
-            'size_max':          int(ens['n_members'].max()),
-            'size_counts':       {int(k): int(v) for k, v in size_counts.items()},
-            'n_member_slots':    len(slots),
-            'n_distinct':        len(distinct),
-            'n_multi_ensemble':  multi_ens,
-            'n_eligible':        results.get('n_eligible', np.nan),
-        },
-        'anatomy': {
-            'n_internal_synapses': int(ens['n_synapses'].sum()),
-            'n_internal_spine':    int(ens['n_spine'].sum()),
-            'n_internal_edges':    int(ens['n_edges'].sum()),
-            'frac_no_internal':    float((ens['n_synapses'] == 0).mean()),
-            'n_possible_pairs':    int((ens['n_members'] * (ens['n_members'] - 1)).sum()),
-            'spine_frac_internal': (float(ens['n_spine'].sum() / ens['n_synapses'].sum())
-                                    if ens['n_synapses'].sum() else np.nan),
-            'baseline_ee_spine_frac':   results.get('baseline_ee_spine_frac', np.nan),
-            'p_global_ee_conn':    b.get('p_global', np.nan),
-        },
-    }
-
-    # ── controls: how many were accepted, and what they contain on average ────
-    ctrl_blocks = {}
-    for name, df, lc, cols in (
-            ('internal wiring (size+edge+compactness)', results.get('matched_controls_df'),
-             'scan_k', ('n_synapses_internal', 'n_spine_internal')),
-            ('shared input (size+edge+compactness+in-degree)', c.get('ctrl_df'), c.get('label_col', 'scan_k'),
-             ('shared_ex', 'shared_inh', 'shared_ex_syn', 'shared_inh_syn')),
-            # Metrics D/E/E-all are not run here; metric F draws from the same
-            # per-neuron control set, so it is what reports that set's size.
-            ('shared input strength (size+compactness+in-degree)',
-             (results.get('shared_input_strength') or {}).get('ctrl_df'), 'label', ()),
-    ):
-        if df is None or not len(df):
-            continue
-        per_label = df.groupby(lc).size()
-        blk = {'n_groups_total': int(len(df)),
-               'n_labels': int(len(per_label)),
-               'per_label_median': float(per_label.median()),
-               'per_label_min': int(per_label.min()),
-               'per_label_max': int(per_label.max()),
-               'n_labels_short': int((per_label < results.get('n_controls', 1000)).sum())}
-        for col in cols:
-            if col in df:
-                blk[f'mean_{col}'] = float(df[col].mean())
-                blk[f'total_{col}'] = float(df[col].sum())
-        ctrl_blocks[name] = blk
-    out['controls'] = ctrl_blocks
-
-    # ── the metric results themselves, as flat numbers ───────────────────────
-    m = {}
-    if a:
-        m['spine targeting'] = {
-            'obs': a['p_obs'], 'null': float(np.nanmean(a['valid_null'])),
-            'fold': a['p_obs'] / float(np.nanmean(a['valid_null'])),
-            'n_num': a['n_spine_obs'], 'n_den': a['n_syn_obs'],
-            'p': a['p_emp'], 'star': a['star'],
-            'n_ensembles_usable': int(a['usable_mask'].sum())}
-    if b:
-        m['connection probability'] = {
-            'obs': b['p_obs'], 'null': float(np.nanmean(b['valid_null'])),
-            'fold': b['p_obs'] / float(np.nanmean(b['valid_null'])),
-            'x_global': b['p_obs'] / b['p_global'],
-            'p': b['p_emp'], 'star': b['star'],
-            **({'n_num': int(b['real_df']['n_synapses'].sum()),
-                'n_den': int(b['real_df']['n_possible'].sum())}
-               if 'real_df' in b else {})}
-    for key, pretty in (('shared_ex', 'shared input (E-only)'), ('shared_inh', 'shared input (I-only)')):
-        if key in c:
-            r  = c[key]
-            mu = float(np.nanmean(r['null']))
-            col = key
-            m[pretty] = {
-                'obs': r['obs'], 'null': mu, 'fold': r['obs'] / mu if mu else np.nan,
-                'p': r['p_emp'], 'star': r['star'],
-                'n_ensembles_nonzero': int((c['real_df'][col] > 0).sum())}
-    for key, pretty in (('shared_ex_spine_frac', 'spine fraction of shared input (E-only)'),
-                        ('shared_inh_spine_frac', 'spine fraction of shared input (I-only)')):
-        if key in c:
-            r  = c[key]
-            mu = float(np.nanmean(r['null'])) if len(r['null']) else np.nan
-            m[pretty] = {'obs': r['obs'], 'null': mu,
-                         'fold': r['obs'] / mu if mu else np.nan,
-                         'n_num': r['n_num'], 'n_den': r['n_den'],
-                         'p': r['p_emp'], 'star': r['star']}
-    for key, pretty in (('shared_input_strength', 'shared input strength'),):
-        r = results.get(key)
-        if r:
-            m[pretty] = {'obs': r['obs'], 'null': r['null_mean'], 'fold': r['fold'],
-                         'p': r['p_emp'], 'star': r['star'],
-                         'n_member_slots': r['n_members'],
-                         'two_sided': True}
-    out['metrics'] = m
-
-    # E/I composition of the shared input, per size — derivable from the two flavours
-    if 'real_df' in c and 'shared_inh' in c['real_df']:
-        rd = c['real_df']
-        comp = {}
-        for sz, sub in rd.groupby('n_members'):
-            tot = int(sub['shared_ex'].sum() + sub['shared_inh'].sum())
-            comp[int(sz)] = {'n_ens': int(len(sub)),
-                             'shared_ex': int(sub['shared_ex'].sum()),
-                             'shared_inh': int(sub['shared_inh'].sum()),
-                             'frac_inhibitory': (sub['shared_inh'].sum() / tot) if tot else np.nan}
-        tot_all = int(rd['shared_ex'].sum() + rd['shared_inh'].sum())
-        comp['all'] = {'n_ens': int(len(rd)),
-                       'shared_ex': int(rd['shared_ex'].sum()),
-                       'shared_inh': int(rd['shared_inh'].sum()),
-                       'frac_inhibitory': (rd['shared_inh'].sum() / tot_all) if tot_all else np.nan}
-        out['shared_input_composition'] = comp
-
-    return out
-
-
-def format_run_numbers_md(numbers, d_size=None, heading=None):
-    """Render `collect_run_numbers` output (+ optional `shared_input_by_size` table) as markdown.
-
-    Written next to the pickle by ensemble_run.py, and pasted into ensemble_paper.md —
-    so the paper quotes numbers that came straight out of the run rather than numbers
-    transcribed by hand.
-    """
-    r, d, mem = numbers['run'], numbers['detection'], numbers['members']
-    an, ctl, mt = numbers['anatomy'], numbers['controls'], numbers['metrics']
-    L = []
-    add = L.append
-
-    add(f"# {heading or r['label'] or r['method']} — run numbers")
-    add('')
-    add(f"Generated by `ensemble_run.py`. Method `{r['method']}`, stimulus "
-        f"`{r['stimulus']}`, trial residual `{r['trial_residual']}`, control pool "
-        f"`{r['control_pool']}`, {r['n_controls_requested']} controls requested per ensemble.")
-    add('')
-
-    add('## Detection')
-    add('')
-    add('| quantity | value |')
-    add('|---|---|')
-    add(f"| excitatory neurons in the column | {d['n_column_ex']} |")
-    add(f"| of those, recorded in ≥1 scan | {d['n_recorded']} |")
-    add(f"| scans with recorded E neurons | {d['n_scans_total']} |")
-    add(f"| scans contributing ≥1 ensemble | {d['n_scans_used']} |")
-    if d['skip_counts']:
-        add(f"| scans skipped | {', '.join(f'{k}={v}' for k, v in sorted(d['skip_counts'].items()))} |")
-    for name, key in (('recorded E neurons per used scan', 'neurons_per_scan'),
-                      ('frames per used scan', 'frames_per_scan'),
-                      ('ensembles per used scan', 'ens_per_scan')):
-        med, lo, hi = d[key]
-        if np.isfinite(med):
-            add(f"| {name} | median {med:.0f} (range {lo:.0f}–{hi:.0f}) |")
-    for name, (med, lo, hi) in d.get('detector_meta', {}).items():
-        if np.isfinite(med):
-            fmt = '{:.0f}' if abs(med) >= 10 or med == int(med) else '{:.3g}'
-            add(f"| detector `{name}` per used scan | median {fmt.format(med)} "
-                f"(range {fmt.format(lo)}–{fmt.format(hi)}) |")
-    add('')
-
-    add('## Ensembles and their members')
-    add('')
-    add('| quantity | value |')
-    add('|---|---|')
-    add(f"| ensembles detected | {mem['n_ensembles']} |")
-    add(f"| ensemble size | median {mem['size_median']:.0f} "
-        f"(range {mem['size_min']}–{mem['size_max']}) |")
-    add(f"| size distribution | {', '.join(f'n={k}: {v}' for k, v in mem['size_counts'].items())} |")
-    add(f"| member slots (a neuron in 2 ensembles counts twice) | {mem['n_member_slots']} |")
-    add(f"| distinct member neurons | {mem['n_distinct']} |")
-    add(f"| neurons in >1 ensemble | {mem['n_multi_ensemble']} |")
-    add(f"| control pool after removing every member | {mem['n_eligible']} "
-        f"(= {d['n_column_ex']} − {mem['n_distinct']}) |")
-    add('')
-
-    add('## Synapses among members')
-    add('')
-    add('| quantity | value |')
-    add('|---|---|')
-    add(f"| internal synapses between members | {an['n_internal_synapses']} |")
-    add(f"| of those, onto spines | {an['n_internal_spine']} "
-        f"({an['spine_frac_internal']:.1%}) |")
-    add(f"| unique connected pre→post pairs | {an['n_internal_edges']} |")
-    add(f"| ordered member pairs (the connection-probability denominator) | {an['n_possible_pairs']} |")
-    add(f"| ensembles with no internal synapse | {an['frac_no_internal']:.0%} |")
-    add(f"| global E→E spine fraction (tagged) | {an['baseline_ee_spine_frac']:.3f} |")
-    add(f"| global E→E connection probability | {an['p_global_ee_conn']:.6f} |")
-    add('')
-
-    add('## Control groups')
-    add('')
-    add('| control set | groups | labels | per ensemble (median [min–max]) | short of quota | contents |')
-    add('|---|---|---|---|---|---|')
-    for name, blk in ctl.items():
-        contents = '; '.join(f"mean {k[5:]}={v:.2f}" for k, v in blk.items()
-                             if k.startswith('mean_'))
-        add(f"| {name} | {blk['n_groups_total']:,} | {blk['n_labels']} | "
-            f"{blk['per_label_median']:.0f} [{blk['per_label_min']}–{blk['per_label_max']}] | "
-            f"{blk['n_labels_short']} | {contents or '—'} |")
-    add('')
-
-    add('## Measures')
-    add('')
-    add('| measure | observed | matched null | fold | counts | p | |')
-    add('|---|---|---|---|---|---|---|')
-    for name, blk in mt.items():
-        counts = (f"{blk['n_num']}/{blk['n_den']}" if 'n_num' in blk else
-                  (f"{blk['n_member_slots']} slots" if 'n_member_slots' in blk else
-                   (f"nonzero in {blk['n_ensembles_nonzero']} ens"
-                    if 'n_ensembles_nonzero' in blk else '—')))
-        obs, null = blk['obs'], blk['null']
-        fmt = '{:.4g}'
-        add(f"| {name}{' (two-sided)' if blk.get('two_sided') else ''} | "
-            f"{fmt.format(obs)} | {fmt.format(null)} | {blk['fold']:.2f}× | {counts} | "
-            f"{blk['p']:.4f} | {blk['star']} |")
-    add('')
-
-    comp = numbers.get('shared_input_composition')
-    if comp:
-        add('## Shared input — E/I composition by ensemble size')
-        add('')
-        add('| size | ensembles | shared E | shared I | % inhibitory |')
-        add('|---|---|---|---|---|')
-        for k in sorted(comp, key=lambda x: (x == 'all', x)):
-            v = comp[k]
-            frac = f"{v['frac_inhibitory']:.1%}" if np.isfinite(v['frac_inhibitory']) else '—'
-            add(f"| {k} | {v['n_ens']} | {v['shared_ex']} | {v['shared_inh']} | {frac} |")
-        add('')
-
-    if d_size is not None and len(d_size):
-        add('## Every measure, by ensemble size')
-        add('')
-        add('`value` is the statistic itself for ratio metrics and the per-ensemble mean '
-            'for count metrics. `reliable=False` marks folds that are arithmetic rather '
-            'than biology (null mean < 1 expected hit, or < 20 synapses in the denominator).')
-        add('')
-        add('| measure | size | n_ens | obs | null | fold | value | p | | reliable |')
-        add('|---|---|---|---|---|---|---|---|---|---|')
-        for row in d_size.itertuples():
-            add(f"| {row.metric} | {row.size} | {row.n_ens} | {row.obs:.4g} | "
-                f"{row.null:.4g} | {row.fold:.2f}× | {row.value:.4g} | {row.p:.4f} | "
-                f"{row.star} | {'yes' if row.reliable else 'NO'} |")
-        add('')
-
-    return '\n'.join(L)
 
 
 def iter_matched_groups(
@@ -2423,7 +2118,7 @@ def sample_matched_controls(
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Reading the results back: per-neuron features, cell-type composition, per-size
-# aggregation. Used by the figure notebooks and by the run's own `_numbers.md`.
+# aggregation. Used by the figure notebooks.
 # ═════════════════════════════════════════════════════════════════════════════
 
 def build_shared_input_strength_series(df, verbose=True):

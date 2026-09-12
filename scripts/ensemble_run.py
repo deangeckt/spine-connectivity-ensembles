@@ -2,15 +2,14 @@
 
     python scripts/ensemble_run.py
 
-Run it once. It writes one pickle per detector into ``data/activity/ensembles/``, plus a
-``_numbers.md`` sidecar holding every count the paper quotes. Figures 6, S14 and S15 read
-those pickles; no figure notebook runs the pipeline itself.
+Run it once. It writes one pickle per detector into ``data/activity/ensembles/``.
+Figures 6, S14 and S15 read those pickles; no figure notebook runs the pipeline itself.
 
 **This needs the two MICrONS activity H5 files** under ``data/activity/``. They are not in
 the Zenodo snapshot either — build them first with
 ``scripts/extract_calcium_data_via_docker.ipynb``. See the README.
 
-Budget 1-3 hours and 1-3 GB of RAM. Rejection sampling for the matched control groups
+Budget 1-2 hours and 1-3 GB of RAM. Rejection sampling for the matched control groups
 dominates; the population-event detector costs about 3x the ICA one.
 
 Everything here follows the paper's "Functional ensemble detection and analysis" Methods
@@ -53,8 +52,7 @@ from ensembles import (
     build_shared_input_strength_series, sample_matched_controls,
     run_spine_targeting_bootstrap, run_connection_probability_bootstrap,
     run_shared_input_bootstrap, run_shared_input_strength_bootstrap,
-    ENSEMBLE_RUN_STEM, ensemble_results_path,
-    shared_input_by_size, collect_run_numbers, format_run_numbers_md,
+    ensemble_results_path,
 )
 
 
@@ -407,26 +405,12 @@ def run_shared_input(shared, all_ensembles_df, ensemble_members_by_scank, base):
 
 
 def save_results(method, results):
-    """Write the pickle and its `_numbers.md` sidecar.
-
-    The sidecar is the paper-facing output: every count a sentence might quote,
-    regenerated on every run.
-    """
+    """Write the detector's results pickle."""
     os.makedirs(ENSEMBLE_RESULTS_DIR, exist_ok=True)
-    stem = ENSEMBLE_RUN_STEM.format(method=method)
     results_path = ensemble_results_path(method)
     with open(results_path, 'wb') as f:
         pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
     print(f'Saved results      → {results_path}')
-
-    numbers_path = os.path.join(ENSEMBLE_RESULTS_DIR, stem + '_numbers.md')
-    md = format_run_numbers_md(
-        collect_run_numbers(results, label=method),
-        d_size=shared_input_by_size(results),
-        heading=f'{method} — {stem}')
-    with open(numbers_path, 'w', encoding='utf-8') as f:
-        f.write(md + '\n')
-    print(f'Saved run numbers  → {numbers_path}')
 
 
 def main():

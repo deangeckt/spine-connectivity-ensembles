@@ -119,7 +119,7 @@ redistribute, so it is in neither Zenodo nor CAVE — it comes out of the MICrON
 `microns_phase3_nda` DataJoint database, which is only reachable from inside that
 project's own docker container.
 
-### 2a. Extract the two H5 files
+### 2a. Extract the two H5 files (~1 hour)
 
 Open **`scripts/extract_calcium_data_via_docker.ipynb`** and follow its first cell. It
 carries the step-by-step; in outline:
@@ -131,26 +131,23 @@ carries the step-by-step; in outline:
    then the full pass — hours, and ~19 GB written.
 4. Copy the two `.h5` files back into `data/activity/` here.
 
-### 2b. Run the ensemble pipeline
+### 2b. Run the ensemble pipeline (~1 hour)
 
 ```
 python scripts/ensemble_run.py
 ```
 
 Detects the ensembles and runs the matched-control bootstraps behind figures 6, S14 and
-S15. Budget 1-3 hours and 1-3 GB of RAM. It writes into `data/activity/ensembles/`, per
+S15. It writes into `data/activity/ensembles/`, per
 detector (`lds`, the ICA detector of the main text, and `ecker`, the population-event
 detector used as an independent check):
 
 ```
 data/activity/ensembles/lds_oracle-resid_disjoint_distance_deg_allmem.pkl
-data/activity/ensembles/lds_oracle-resid_disjoint_distance_deg_allmem_numbers.md
 data/activity/ensembles/ecker_oracle-resid_disjoint_distance_deg_allmem.pkl
-data/activity/ensembles/ecker_oracle-resid_disjoint_distance_deg_allmem_numbers.md
 ```
 
 Run it once. No figure notebook runs the pipeline itself — they only read these pickles.
-The `_numbers.md` sidecars hold every count behind the figures, regenerated on every run.
 
 Figure 7 and figure 6 panel A do not use the pickles: they read the calcium H5 directly,
 so step 2a alone is enough for them.

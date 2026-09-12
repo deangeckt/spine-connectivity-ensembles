@@ -36,10 +36,6 @@ errors are retried before a cell is given up on, and a run that ends with cells 
 missing says so and refuses to build the network-wide tables from a partial set
 (`--allow-incomplete` overrides that).
 
-Budget roughly a day of wall clock and ~25 GB. The two per-neuron CAVE loops
-(synapses, then spine tags) dominate — one query per neuron, no bulk endpoint. Peak RAM
-is in `connectome_outgoing_synapses.csv`, which holds every synapse of every neuron in
-the network at once: ~8 GB for the column, ~16 GB for the proofread-axon network.
 
 Steps, in dependency order:
 

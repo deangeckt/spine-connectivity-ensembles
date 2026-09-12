@@ -2,3 +2,6 @@ data/
 __pycache__/
 .cache
 data.zip
+.jupyter/
+.jupyter*
+.ipynb*
